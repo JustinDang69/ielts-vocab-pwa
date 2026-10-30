@@ -1,0 +1,12 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dev",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/dev-server.mjs", "--port", "8787"],
+      "env": { "DEV_TOKEN": "local-dev-token-0123456789abcdef01234567" },
+      "port": 8787
+    }
+  ]
+}
