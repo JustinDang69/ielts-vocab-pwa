@@ -58,7 +58,7 @@ export function wordInfo(e, { compact = false } = {}) {
     ${sec('Ví dụ bổ sung <span class="src">không phải câu gốc</span>', esc(f.example), 'gen')}
     ${sec('Cách dùng / Collocations', esc(f.usage))}
     ${sec('Ghi chú / Lỗi dễ nhầm', esc(compact && f.note.length > 220 ? f.note.slice(0, 220) + '…' : f.note), 'note')}
-    ${ttsAvailable() ? '<p class="fine">🔊 Nghe mẫu là giọng máy của thiết bị — nghe không có nghĩa là đã phát âm đúng. Phát âm do Max kiểm tra.</p>' : ''}
+    ${ttsAvailable() ? '<p class="fine">🔊 Nghe mẫu là giọng máy của thiết bị — nghe không có nghĩa là đã phát âm đúng — hãy luyện nói với Max.</p>' : ''}
   `;
 }
 

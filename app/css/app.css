@@ -62,7 +62,7 @@ main {
   max-width: 640px; margin: 0 auto; outline: none;
 }
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; display: grid; grid-template-columns: repeat(3, 1fr);
   background: var(--surface); border-top: 1px solid var(--line);
   padding: 4px max(8px, env(safe-area-inset-right)) calc(env(safe-area-inset-bottom) + 4px) max(8px, env(safe-area-inset-left));
 }
@@ -96,8 +96,6 @@ body.in-session main { padding-bottom: calc(env(safe-area-inset-bottom) + 20px);
 .st-new { background: var(--sky-soft); border-color: transparent; }
 .st-review { background: var(--sun-soft); border-color: transparent; }
 .st-learning { background: var(--accent-soft); border-color: transparent; }
-.st-awaiting_max { background: #EFE5FA; border-color: transparent; }
-@media (prefers-color-scheme: dark) { .st-awaiting_max { background: #2F2840; } }
 .st-mastered { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
 .st-removed { opacity: .7; }
 .tag { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 6px; margin-bottom: 6px; }
@@ -210,7 +208,7 @@ section.info.gen > div { border-left: 3px dashed var(--sun); padding-left: 10px;
 .history li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14.5px; }
 .history li:first-child { border-top: 0; }
 
-/* ---------- max / settings */
+/* ---------- settings */
 .pick { list-style: none; padding: 0; margin: 0 0 8px; }
 .pick label { display: flex; gap: 12px; align-items: center; min-height: 48px; padding: 4px 0; }
 .pick input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }

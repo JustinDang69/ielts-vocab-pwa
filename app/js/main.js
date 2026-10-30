@@ -6,13 +6,11 @@ import { syncBadge } from './ui/common.js';
 import { renderHome } from './ui/home.js';
 import { renderSession } from './ui/session-view.js';
 import { renderLibrary, renderWord } from './ui/library.js';
-import { renderMax } from './ui/max-view.js';
 import { renderSettings, renderWelcome } from './ui/settings.js';
 
 const NAV = [
   ['home', '#/', '🏠', 'Học'],
   ['library', '#/library', '📚', 'Kho từ'],
-  ['max', '#/max', '🎤', 'Max'],
   ['settings', '#/settings', '⚙️', 'Cài đặt'],
 ];
 
@@ -47,7 +45,6 @@ async function route() {
   }
   if (name === 'library') return renderLibrary(view, params);
   if (name === 'word') return renderWord(view, arg, go);
-  if (name === 'max') return renderMax(view);
   if (name === 'settings') return renderSettings(view, go);
   return renderHome(view, go);
 }

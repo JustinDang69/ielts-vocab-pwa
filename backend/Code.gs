@@ -9,9 +9,11 @@
  *   - adds ONE column "ID (app)" after the last column (once, additive),
  *   - fills IDs only in empty ID cells of rows that have a term, one cell at a time,
  *     re-checking the row just before writing,
- *   - optionally (off by default) writes "Trạng thái" / "Ngày ôn gần nhất" for a row,
- *     only values from the existing dropdown, never downgrading "Mastered".
- * Everything else (review history, schedule, Max results) lives in a SEPARATE
+ *   - writes "Trạng thái" (Learning / Review / Mastered, only values from the existing
+ *     dropdown) and "Ngày ôn gần nhất" for a row when the app's state for it changes, so
+ *     Max (ChatGPT) can read them. Never writes "New", never overwrites a "Mastered"
+ *     that someone else set. Turn off with Script Property SHEET_WRITEBACK = off.
+ * Everything else (review history, schedule) lives in a SEPARATE
  * spreadsheet "IELTS Vocab App – Dữ liệu học", as the Sheet's "Hướng dẫn" requires.
  *
  * Sync contract: see docs/SYNC.md.
@@ -28,15 +30,21 @@ var HEADERS = {
   lastReview: 'Ngày ôn gần nhất', note: 'Ghi chú / Lỗi dễ nhầm', id: ID_HEADER
 };
 var DEFAULT_STATUSES = ['New', 'Learning', 'Review', 'Mastered'];
-var EVENT_TYPES = ['review', 'max_result', 'max_export', 'mastered', 'restore', 'flag_item'];
+var EVENT_TYPES = ['review', 'mastered', 'restore', 'flag_item'];
 var EVENT_COLS = ['seq', 'eventId', 'type', 'wordId', 'ts', 'studyDate', 'deviceId', 'data', 'receivedAt'];
 var STATE_COLS = ['wordId', 'term', 'status', 'sheetStatus', 'box', 'nextReview', 'lastStudyDate', 'successDates',
   'contextualDates', 'recallMet', 'maxPronunciation', 'maxUsage', 'archived', 'attempts', 'errors', 'hintsUsed',
-  'computedFromSeq', 'deviceId', 'updatedAt'];
+  'computedFromSeq', 'deviceId', 'updatedAt', 'sheetStatusWritten'];
+// (maxPronunciation / maxUsage are unused legacy columns, kept so existing tabs stay aligned)
 var ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{2,40}$/;
-var GUIDE_KEY = 'Cột ID (app)';
 var GUIDE_TEXT = 'Do app học từ vựng của Justin tự tạo (dạng v-xxxxxxxx) để nhận diện từng hàng. Khi thêm hàng mới: để trống ô này. ' +
   'Không sửa, xóa hoặc sao chép ID sang hàng khác. Khi bổ sung vào hàng cũ: giữ nguyên ID của hàng đó.';
+var GUIDE_ROWS = [
+  ['Cột ID (app)', GUIDE_TEXT],
+  ['App cập nhật trạng thái', 'App học từ vựng tự ghi cột Trạng thái và Ngày ôn gần nhất sau khi Justin ôn: Learning = đang học; ' +
+    'Review = đến hạn ôn lại; Mastered = đã tự nhớ đúng, không gợi ý, ở 3 ngày khác nhau (có 1 lần trong câu). ' +
+    'Max có thể đọc hai cột này để chọn từ luyện nói. Hàng mới vẫn ghi New như cũ; app không ghi đè Mastered do người hoặc chat khác đặt.']
+];
 var MAX_EVENTS_PER_CALL = 500;
 var MAX_PULL = 1000;
 
@@ -56,15 +64,15 @@ function onOpen() {
 function setup() {
   var props = PropertiesService.getScriptProperties();
   if (!props.getProperty('API_TOKEN')) props.setProperty('API_TOKEN', newToken_());
-  if (props.getProperty('WRITEBACK_STATUS') === null) props.setProperty('WRITEBACK_STATUS', 'false');
-  if (props.getProperty('WRITEBACK_LAST_REVIEW') === null) props.setProperty('WRITEBACK_LAST_REVIEW', 'false');
+  props.deleteProperty('WRITEBACK_STATUS'); // replaced by SHEET_WRITEBACK (on unless set to "off")
+  props.deleteProperty('WRITEBACK_LAST_REVIEW');
   var data = dataSpreadsheet_();
   var lock = LockService.getScriptLock();
   lock.waitLock(30000);
   var res;
   try {
     ensureIdColumn_(vocabSheet_());
-    ensureGuideRow_();
+    ensureGuideRows_();
     res = assignIds_();
   } finally {
     lock.releaseLock();
@@ -147,6 +155,7 @@ function sync_(req) {
   lock.waitLock(25000);
   try {
     var ids = assignIds_();
+    ensureGuideRows_();
     var vocab = readVocab_();
     var known = {};
     vocab.entries.forEach(function (x) { known[x.id] = true; });
@@ -199,14 +208,19 @@ function ensureIdColumn_(sh) {
   return col;
 }
 
-function ensureGuideRow_() {
+/** Appends the app's explanation rows to "Hướng dẫn" if they are missing (never edits others). */
+function ensureGuideRows_() {
   var g = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(GUIDE_SHEET);
   if (!g) return;
   var last = g.getLastRow();
-  var col = last ? g.getRange(1, 1, last, 1).getDisplayValues() : [];
-  for (var i = 0; i < col.length; i++) if (String(col[i][0]).trim() === GUIDE_KEY) return;
-  g.getRange(last + 1, 1, 1, 2).setValues([[GUIDE_KEY, GUIDE_TEXT]]);
-  log_('guide_row_added', 'row ' + (last + 1));
+  var have = {};
+  (last ? g.getRange(1, 1, last, 1).getDisplayValues() : []).forEach(function (r) { have[String(r[0]).trim()] = true; });
+  GUIDE_ROWS.forEach(function (row) {
+    if (have[row[0]]) return;
+    last++;
+    g.getRange(last, 1, 1, 2).setValues([row]);
+    log_('guide_row_added', row[0] + ' (row ' + last + ')');
+  });
 }
 
 /**
@@ -326,6 +340,13 @@ function ensureTab_(ss, name, cols) {
   if (sh.getLastRow() === 0) {
     sh.getRange(1, 1, 1, cols.length).setValues([cols]);
     sh.setFrozenRows(1);
+  } else {
+    // columns added in later versions are appended to the header (existing ones never move)
+    var have = sh.getRange(1, 1, 1, sh.getLastColumn()).getDisplayValues()[0];
+    for (var i = have.length; i < cols.length; i++) {
+      if (sh.getMaxColumns() < i + 1) sh.insertColumnAfter(sh.getMaxColumns());
+      sh.getRange(1, i + 1).setValue(cols[i]);
+    }
   }
   return sh;
 }
@@ -351,13 +372,6 @@ function validateEvent_(ev, known) {
   var d = ev.data || {};
   if (typeof d !== 'object') return 'bad_data';
   if (JSON.stringify(d).length > 8000) return 'data_too_large';
-  if (ev.type === 'max_result') {
-    if (!known[ev.wordId]) return 'unknown_word';
-    var ok = ['pass', 'needs_work', 'not_assessed'];
-    if (ok.indexOf(d.pronunciation) < 0 || ok.indexOf(d.usage) < 0) return 'bad_max_values';
-    // a transcript alone cannot establish pronunciation quality
-    if (d.pronunciation !== 'not_assessed' && d.pronunciationEvidence !== 'audio') return 'pronunciation_without_audio';
-  }
   return null;
 }
 
@@ -422,7 +436,7 @@ function readEventsSince_(sinceSeq) {
 /**
  * Upserts the readable WordState mirror. A row is only replaced by a snapshot computed
  * from at least as many server events (computedFromSeq), so a stale device can't
- * overwrite newer state. Optional Sheet write-back happens here too.
+ * overwrite newer state. Then writes changed statuses back into the vocabulary Sheet.
  */
 function pushState_(req) {
   var states = Array.isArray(req.states) ? req.states.slice(0, 2000) : [];
@@ -435,45 +449,47 @@ function pushState_(req) {
     var at = {};
     table.forEach(function (r, i) { at[r[0]] = i; });
     var seqCol = STATE_COLS.indexOf('computedFromSeq');
+    var wCol = STATE_COLS.indexOf('sheetStatusWritten');
     var updated = 0, stale = 0;
     var now = new Date().toISOString();
     var fresh = [];
     states.forEach(function (s) {
       if (!s || typeof s.wordId !== 'string') return;
+      var prev = at[s.wordId] !== undefined ? table[at[s.wordId]] : null;
+      if (prev && Number(prev[seqCol] || 0) > Number(s.computedFromSeq || 0)) { stale++; return; }
       var row = STATE_COLS.map(function (c) {
         if (c === 'updatedAt') return now;
         if (c === 'deviceId') return String(req.deviceId || '');
+        if (c === 'sheetStatusWritten') return prev ? prev[wCol] : '';
         var v = s[c];
         return v === undefined || v === null ? '' : String(v);
       });
-      if (at[s.wordId] !== undefined) {
-        if (Number(table[at[s.wordId]][seqCol] || 0) > Number(s.computedFromSeq || 0)) { stale++; return; }
-        table[at[s.wordId]] = row;
-      } else {
-        at[s.wordId] = table.length;
-        table.push(row);
-      }
-      fresh.push(s);
+      if (prev) table[at[s.wordId]] = row;
+      else { at[s.wordId] = table.length; table.push(row); }
+      fresh.push({ s: s, row: row });
       updated++;
     });
+    var wb = writeBack_(fresh, wCol);
     if (table.length) {
       var range = sh.getRange(2, 1, table.length, STATE_COLS.length);
       range.setNumberFormat('@');
       range.setValues(table);
     }
-    var wb = writeBack_(fresh);
     return { ok: true, updated: updated, stale: stale, writeback: wb };
   } finally {
     lock.releaseLock();
   }
 }
 
-function writeBack_(states) {
-  var props = PropertiesService.getScriptProperties();
-  var doStatus = props.getProperty('WRITEBACK_STATUS') === 'true';
-  var doDate = props.getProperty('WRITEBACK_LAST_REVIEW') === 'true';
-  var out = { enabled: { status: doStatus, lastReview: doDate }, written: 0 };
-  if (!doStatus && !doDate) return out;
+/**
+ * Writes "Trạng thái" when the app's status for a word changed since the app last wrote it
+ * (so later edits by other chats are respected until the app has news), and moves
+ * "Ngày ôn gần nhất" forward. Rules: only dropdown values; never "New"; never replaces a
+ * "Mastered" the app didn't write itself. Single cells, on the row whose ID matches.
+ */
+function writeBack_(fresh, wCol) {
+  var out = { enabled: PropertiesService.getScriptProperties().getProperty('SHEET_WRITEBACK') !== 'off', written: 0 };
+  if (!out.enabled || !fresh.length) return out;
   var sh = vocabSheet_();
   var idx = headerIndex_(sh);
   var last = sh.getLastRow();
@@ -482,17 +498,21 @@ function writeBack_(states) {
   var rowOf = {};
   ids.forEach(function (r, i) { if (r[0]) rowOf[String(r[0]).trim()] = i + 2; });
   var options = statusOptions_(sh, idx);
-  states.forEach(function (s) {
+  fresh.forEach(function (f) {
+    var s = f.s;
     var row = rowOf[s.wordId];
     if (!row) return;
     // re-verify the row still carries this ID right before writing
     if (String(sh.getRange(row, idx.id + 1).getDisplayValue()).trim() !== s.wordId) return;
-    if (doStatus && idx.status !== undefined && s.sheetStatus && options.indexOf(s.sheetStatus) >= 0) {
+    var want = s.sheetStatus;
+    var lastWritten = f.row[wCol];
+    if (idx.status !== undefined && want && want !== 'New' && options.indexOf(want) >= 0 && want !== lastWritten) {
       var c = sh.getRange(row, idx.status + 1);
       var cur = String(c.getDisplayValue()).trim();
-      if (cur !== s.sheetStatus && cur !== 'Mastered') { c.setValue(s.sheetStatus); out.written++; }
+      if (cur === want) f.row[wCol] = want;
+      else if (!(cur === 'Mastered' && lastWritten !== 'Mastered')) { c.setValue(want); f.row[wCol] = want; out.written++; }
     }
-    if (doDate && idx.lastReview !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(s.lastStudyDate || '')) {
+    if (idx.lastReview !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(s.lastStudyDate || '')) {
       var d = sh.getRange(row, idx.lastReview + 1);
       var curD = String(d.getDisplayValue()).trim();
       if (!curD || curD < s.lastStudyDate) { d.setNumberFormat('@'); d.setValue(s.lastStudyDate); out.written++; }

@@ -4,10 +4,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { findTerm, mask, gloss, similarMeaning, normAnswer } from '../app/js/core/text.js';
-import { computeStates, DEFAULT_CONFIG } from '../app/js/core/state.js';
+import { computeStates, DEFAULT_CONFIG, stateSnapshot } from '../app/js/core/state.js';
 import { buildItem, gradeTyped, available } from '../app/js/core/exercises.js';
 import { planSession, newSession, recordAnswer, currentItem } from '../app/js/core/session.js';
-import { validateMaxResult, extractJson, buildMaxPrompt } from '../app/js/core/max.js';
 import { entriesFromCSV, parseCSV } from '../app/js/core/csv.js';
 import { addDays } from '../app/js/core/dates.js';
 import { DEMO_ENTRIES } from '../app/js/demo-data.js';
@@ -53,7 +52,7 @@ test('recall rule needs 3 separate dates incl. 1 contextual', () => {
   evs.push(rev('w1', d(3), {}));
   s = computeStates(entries, evs, DEFAULT_CONFIG, d(3)).states.get('w1');
   assert.equal(s.recallMet, true);
-  assert.equal(s.status, 'awaiting_max');
+  assert.equal(s.eligibleForMastery, true, 'recall criteria alone make a word eligible for mastery');
 });
 
 test('recognition, hints, reveals, self-ratings and retries never satisfy recall', () => {
@@ -89,26 +88,27 @@ test('schedule: only first graded attempt per day moves the box; wrong -> tomorr
   assert.equal(s.nextReview, d(3));
 });
 
-test('mastery gating: recall + Max pronunciation + Max usage; not_assessed never erases', () => {
-  const evs = [rev('w1', d(0), { contextual: true }), rev('w1', d(1), {}), rev('w1', d(2), {})];
-  const mx = (day, p, u) => ({ eventId: 'm' + (++seq), type: 'max_result', wordId: 'w1', ts: `${day}T12:00:00.000Z`, studyDate: day, data: { pronunciation: p, usage: u, assessedAt: day } });
-  evs.push(mx(d(2), 'pass', 'not_assessed'));
-  let s = computeStates(entries, evs, DEFAULT_CONFIG, d(2)).states.get('w1');
+test('mastery: recall criteria -> mastered event archives; restore resets recall; Sheet status mapping', () => {
+  const evs = [rev('w1', d(0), { contextual: true }), rev('w1', d(1), {})];
+  let s = computeStates(entries, evs, DEFAULT_CONFIG, d(1)).states.get('w1');
   assert.equal(s.eligibleForMastery, false);
-  evs.push(mx(d(3), 'not_assessed', 'pass'));
-  s = computeStates(entries, evs, DEFAULT_CONFIG, d(3)).states.get('w1');
-  assert.equal(s.maxPron.value, 'pass');
+  assert.equal(stateSnapshot(s, entries[0]).sheetStatus, 'Learning');
+  evs.push(rev('w1', d(2), {}));
+  s = computeStates(entries, evs, DEFAULT_CONFIG, d(2)).states.get('w1');
   assert.equal(s.eligibleForMastery, true);
-  // mastered event archives; restore brings it back with recall reset
   evs.push({ eventId: 'z1', type: 'mastered', wordId: 'w1', ts: `${d(3)}T13:00:00.000Z`, studyDate: d(3), data: {} });
   s = computeStates(entries, evs, DEFAULT_CONFIG, d(3)).states.get('w1');
   assert.equal(s.status, 'mastered');
+  assert.equal(stateSnapshot(s, entries[0]).sheetStatus, 'Mastered');
   assert.equal(s.nextMaintenance, d(33));
   evs.push({ eventId: 'z2', type: 'restore', wordId: 'w1', ts: `${d(40)}T13:00:00.000Z`, studyDate: d(40), data: {} });
   s = computeStates(entries, evs, DEFAULT_CONFIG, d(40)).states.get('w1');
   assert.equal(s.archived, false);
   assert.equal(s.recallMet, false);
   assert.equal(s.due, true);
+  assert.equal(stateSnapshot(s, entries[0]).sheetStatus, 'Review');
+  // a word never studied is never written to the Sheet
+  assert.equal(stateSnapshot(computeStates(entries, [], DEFAULT_CONFIG, d(0)).states.get('w1'), entries[0]).sheetStatus, '');
 });
 
 test('duplicate events (same eventId delivered twice) do not double count', () => {
@@ -181,29 +181,6 @@ test('session: no archived words; wrong answers return later as retry', () => {
   recordAnswer(s, { outcome: 'wrong' });
   const again = s.queue.findIndex((q, i) => i > 0 && q.wordId === first.wordId && q.retry);
   assert.ok(again >= 1 && again <= 4, 'retry inserted a few items later');
-});
-
-test('Max import validation', () => {
-  const byId = new Map(DEMO_ENTRIES.map((e) => [e.id, e]));
-  const { states } = computeStates(DEMO_ENTRIES, [], DEFAULT_CONFIG, '2026-11-02');
-  const prompt = buildMaxPrompt(DEMO_ENTRIES.slice(0, 2), 'mx-1', '2026-11-02');
-  assert.match(prompt, /\[demo-01\]/);
-  const ok = validateMaxResult(extractJson('Here:\n```json\n' + JSON.stringify({
-    format: 'ielts-max-result/v1', batchId: 'mx-1', assessedAt: '2026-11-02', mode: 'voice',
-    results: [
-      { id: 'demo-01', term: 'mitigate', pronunciation: 'pass', pronunciationEvidence: 'audio', usage: 'pass', feedback: 'Good' },
-      { id: 'demo-02', pronunciation: 'pass', pronunciationEvidence: 'transcript', usage: 'needs_work' },
-    ],
-  }) + '\n```'), { entriesById: byId, states, exports: [{ batchId: 'mx-1', ids: ['demo-01', 'demo-02'], date: '2026-11-02' }], today: '2026-11-02' });
-  assert.equal(ok.ok, true, ok.errors.join('; '));
-  assert.equal(ok.rows[0].pronunciation, 'pass');
-  assert.equal(ok.rows[1].pronunciation, 'not_assessed', 'transcript cannot prove pronunciation');
-  const bad = validateMaxResult({ format: 'ielts-max-result/v1', batchId: 'mx-9', assessedAt: '2099-01-01', results: [{ id: 'nope', pronunciation: 'great' }, { id: 'demo-01' }, { id: 'demo-01' }] }, { entriesById: byId, states, today: '2026-11-02' });
-  assert.equal(bad.ok, false);
-  assert.ok(bad.errors.some((e) => /tương lai/.test(e)));
-  assert.ok(bad.errors.some((e) => /nope/.test(e)));
-  assert.ok(bad.errors.some((e) => /lặp/.test(e)));
-  assert.equal(bad.rows[1].pronunciation, 'not_assessed', 'missing stays not_assessed');
 });
 
 test('CSV parser handles quotes, commas and newlines', () => {

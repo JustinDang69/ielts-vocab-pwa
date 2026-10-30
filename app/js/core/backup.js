@@ -2,7 +2,7 @@
 // entries by id (the newer copy of an entry wins). Nothing on the device is deleted.
 export const BACKUP_FORMAT = 'ielts-vocab-backup/v1';
 
-export function makeBackup({ mode, deviceId, entries, events, settings, exports, appVersion }) {
+export function makeBackup({ mode, deviceId, entries, events, settings, appVersion }) {
   return {
     format: BACKUP_FORMAT,
     appVersion,
@@ -11,7 +11,6 @@ export function makeBackup({ mode, deviceId, entries, events, settings, exports,
     deviceId,
     counts: { entries: entries.length, events: events.length },
     settings,
-    maxExports: exports || [],
     entries,
     events: events.map(({ _synced, _rejected, ...e }) => ({ ...e, synced: !!_synced })),
   };

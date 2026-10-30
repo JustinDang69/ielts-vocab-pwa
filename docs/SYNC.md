@@ -5,7 +5,7 @@ Two kinds of data, two owners:
 | Data | Owner | Where it lives |
 |---|---|---|
 | Vocabulary content (term, meaning, context, …) | **The Sheet** ("Vocab & Phrases"); other ChatGPT chats keep editing it | Google Sheet. The app only reads it, except for the `ID (app)` column |
-| Learning history (reviews, hints, errors, Max results, mastery, restores) | **The app** | Append-only event log: IndexedDB on the device + `Events` tab of the separate "IELTS Vocab App – Dữ liệu học" spreadsheet |
+| Learning history (reviews, hints, errors, mastery, restores) | **The app** | Append-only event log: IndexedDB on the device + `Events` tab of the separate "IELTS Vocab App – Dữ liệu học" spreadsheet |
 
 Derived state (box, next review date, recall progress, status) is **never synced as truth**. Every device computes it by replaying the event log (`app/js/core/state.js`). The server keeps a readable mirror (`WordState` tab) for humans and backups.
 
@@ -21,14 +21,14 @@ Derived state (box, next review date, recall progress, status) is **never synced
 ## Events
 
 ```json
-{ "eventId": "uuid", "v": 1, "type": "review|max_result|max_export|mastered|restore|flag_item",
+{ "eventId": "uuid", "v": 1, "type": "review|mastered|restore|flag_item",
   "wordId": "v-1a2b3c4d", "ts": "ISO-8601", "studyDate": "YYYY-MM-DD (Australia/Sydney)",
   "deviceId": "d-…", "data": { … } }
 ```
 
 - An event is written to IndexedDB **before** it is shown as done, then queued (`_synced: 0`).
 - `eventId` is generated on the device, so retries are idempotent: the server skips IDs it already has and reports them as `duplicates`. The client treats `accepted ∪ duplicates` as saved.
-- The server validates each event (ID format, type, date, size). For `max_result` it also checks that the word exists, the outcome values are valid, and `pronunciation ≠ "not_assessed"` comes with `pronunciationEvidence = "audio"`. Rejected events stay on the device with the reason shown in Cài đặt → Đồng bộ.
+- The server validates each event (ID format, type, date, size). Rejected events stay on the device with the reason shown in Cài đặt → Đồng bộ.
 - The server assigns an increasing `seq`. Clients pull `seq > lastSeq` to receive other devices' events (≤1000 per call, `more: true` to continue).
 - Ordering for replay is `(ts, eventId)`, which is deterministic on every device. Conflicts can't happen because nothing is overwritten: two devices reviewing the same word offline simply contribute two events.
 - A `flag_item` ("câu hỏi chưa ổn") voids the review it was raised on and stops that exercise type for that word.
@@ -41,7 +41,7 @@ Every request includes `token` (the pairing secret from Script Properties) and `
 |---|---|---|
 | `ping` | – | `{ok, apiVersion, serverTime}` |
 | `sync` | `events[] (≤500)`, `sinceSeq` | `{ids:{assigned,reassigned,skipped}, vocab:{entries[], warnings[], pendingIds, statusOptions[]}, push:{accepted[], duplicates[], rejected[{eventId,reason}]}, pull:{events[], lastSeq, more}}` |
-| `pushState` | `states[]` with `computedFromSeq` | `{updated, stale, writeback}`. A mirror row is only replaced by a snapshot computed from ≥ as many server events |
+| `pushState` | `states[]` with `computedFromSeq` | `{updated, stale, writeback}`. A mirror row is only replaced by a snapshot computed from ≥ as many server events; then statuses are written back to the Sheet |
 
 Errors: `{ok:false, error:"unauthorized"|"bad_json"|"unknown_action"|"server_error", message?}`.
 
@@ -55,9 +55,14 @@ Errors: `{ok:false, error:"unauthorized"|"bad_json"|"unknown_action"|"server_err
 
 The badge says **"Đã lưu lên Google · time"** only when the device has no pending events and the last sync succeeded. Otherwise it says **"N thay đổi chỉ trên máy"**.
 
-## Optional Sheet write-back (off by default)
+## Sheet write-back (on by default)
 
-Script Properties `WRITEBACK_STATUS` / `WRITEBACK_LAST_REVIEW` = `true` enable writing `Trạng thái` (`New/Learning/Review/Mastered` only, taken from the existing dropdown; never overwrites a `Mastered` cell; "Chờ Max kiểm tra" is shown as `Learning`) and `Ngày ôn gần nhất` (only moves forward). Writes are single cells on the row whose `ID (app)` matches, re-checked just before writing.
+So that Max (ChatGPT) can read learning progress from the Sheet, `pushState` writes two cells per changed word, on the row whose `ID (app)` matches (re-checked just before writing):
+
+- `Trạng thái`: `Learning` (studying), `Review` (due), `Mastered` (recall criteria met). Only values from the column's existing dropdown are written; `New` is never written.
+- `Ngày ôn gần nhất`: the last study date, stored as text, and only ever moved forward.
+
+The `WordState` tab remembers the last status the app wrote (`sheetStatusWritten`). A status is written only when the app's own status differs from that value, so later edits by Max or another chat are left alone until the app's status changes again. A `Mastered` the app did not write itself is never replaced. Set Script Property `SHEET_WRITEBACK` = `off` to disable.
 
 ## Backups
 

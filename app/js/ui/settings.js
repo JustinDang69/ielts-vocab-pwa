@@ -86,7 +86,8 @@ export function renderSettings(root, go) {
         <select id="rd">${[1, 2, 3, 4, 5, 6].map((n) => `<option ${n === M.config.requiredDates ? 'selected' : ''}>${n}</option>`).join('')}</select> ngày khác nhau,
         trong đó ít nhất <select id="rc">${[0, 1, 2, 3].map((n) => `<option ${n === M.config.requiredContextual ? 'selected' : ''}>${n}</option>`).join('')}</select> lần là bài trong ngữ cảnh (điền vào câu / paraphrase), và lần gần nhất đúng.</p>
         <p class="fine">Không tính: chọn đáp án (nhận diện), xem đáp án, tự đánh giá "Nhớ rồi", làm lại ngay trong cùng phiên, hoặc có dùng gợi ý. Nhiều lần trong cùng một ngày chỉ tính 1 ngày.</p>
-        <p class="small">Sau đó: <b>Chờ Max kiểm tra</b>. Chỉ khi Max xác nhận <b>phát âm dễ hiểu</b> và <b>dùng đúng ngữ cảnh</b> thì từ mới thành <b>Đã thuộc</b>.</p>
+        <p class="small">Đủ điều kiện → <b>Đã thuộc</b>: cất vào kho, chỉ thỉnh thoảng ôn duy trì.</p>
+        <p class="fine">App ghi <b>Trạng thái</b> (Learning / Review / Mastered) và <b>Ngày ôn gần nhất</b> lên Sheet sau mỗi lần đồng bộ, để Max xem và chọn từ luyện nói.</p>
       </div>
 
       <div class="card">
@@ -157,7 +158,7 @@ function bind(root, go) {
       renderSettings(root, go);
     }
     if (a === 'backup') {
-      const b = makeBackup({ mode: M.mode, deviceId: M.deviceId, entries: M.entries, events: M.events, settings: { config: M.config, settings: M.settings }, exports: M.maxExports, appVersion: APP_VERSION });
+      const b = makeBackup({ mode: M.mode, deviceId: M.deviceId, entries: M.entries, events: M.events, settings: { config: M.config, settings: M.settings }, appVersion: APP_VERSION });
       const name = `ielts-vocab-${M.mode}-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '')}.json`;
       await download(name, JSON.stringify(b, null, 1));
     }

@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG = {
   timezone: 'Australia/Sydney',
 };
 
-export const EVENT_TYPES = ['review', 'max_result', 'max_export', 'mastered', 'restore', 'flag_item'];
+export const EVENT_TYPES = ['review', 'mastered', 'restore', 'flag_item'];
 
 // Outcomes of a review event.
 //  correct      – answered correctly
@@ -30,13 +30,14 @@ export const STATUS_LABEL = {
   new: 'Mới',
   learning: 'Đang học',
   review: 'Cần ôn',
-  awaiting_max: 'Chờ Max kiểm tra',
   mastered: 'Đã thuộc',
   removed: 'Không còn trong Sheet',
 };
 
+// What the app writes into the Sheet's "Trạng thái" column (Max reads it there).
+// "new" is never written: the app has no information about a word it hasn't studied.
 export const SHEET_STATUS_FOR = {
-  new: 'New', learning: 'Learning', review: 'Review', awaiting_max: 'Learning', mastered: 'Mastered',
+  learning: 'Learning', review: 'Review', mastered: 'Mastered',
 };
 
 export function sortEvents(events) {
@@ -57,9 +58,6 @@ function blank(id) {
     attempts: 0,
     errors: 0,
     hintsUsed: 0,
-    maxPron: null,
-    maxUsage: null,
-    maxHistory: [],
     archived: false,
     masteredAt: null,
     lastMaintenance: null,
@@ -120,13 +118,6 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
       } else if (!s.nextReview) {
         s.nextReview = addDays(ev.studyDate, 1);
       }
-    } else if (ev.type === 'max_result') {
-      s.maxHistory.push(ev);
-      const rec = (v) => ({ value: v, at: d.assessedAt, feedback: d.feedback || '', origin: d.origin || null, eventId: ev.eventId });
-      // "not_assessed" carries no information and never erases an earlier assessment.
-      if (d.pronunciation === 'pass' || d.pronunciation === 'needs_work') s.maxPron = rec(d.pronunciation);
-      if (d.usage === 'pass' || d.usage === 'needs_work') s.maxUsage = rec(d.usage);
-      s.history.push(ev);
     } else if (ev.type === 'mastered') {
       if (!s.archived) { s.archived = true; s.masteredAt = ev.studyDate; s.history.push(ev); }
     } else if (ev.type === 'restore') {
@@ -148,8 +139,7 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
     s.recallMet = s.successDates.size >= cfg.requiredDates
       && s.contextualDates.size >= cfg.requiredContextual
       && s.lastUnassisted === 'correct';
-    s.maxOk = s.maxPron?.value === 'pass' && s.maxUsage?.value === 'pass';
-    s.eligibleForMastery = s.recallMet && s.maxOk && !s.archived;
+    s.eligibleForMastery = s.recallMet && !s.archived;
     if (s.archived) {
       const base = s.lastMaintenance || s.masteredAt;
       const iv = cfg.maintenanceIntervals[Math.min(s.maintenanceCount, cfg.maintenanceIntervals.length - 1)];
@@ -159,7 +149,6 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
     if (!s.inSheet) s.status = 'removed';
     else if (s.archived) s.status = 'mastered';
     else if (!s.attempts) s.status = 'new';
-    else if (s.recallMet) s.status = 'awaiting_max';
     else if (today && s.nextReview && s.nextReview <= today) s.status = 'review';
     else s.status = 'learning';
     s.due = s.status === 'new' || (today && s.nextReview && s.nextReview <= today && !s.archived);
@@ -194,8 +183,6 @@ export function stateSnapshot(s, entry) {
     successDates: [...s.successDates].sort().join(' '),
     contextualDates: [...s.contextualDates].sort().join(' '),
     recallMet: s.recallMet,
-    maxPronunciation: s.maxPron?.value || 'not_assessed',
-    maxUsage: s.maxUsage?.value || 'not_assessed',
     archived: s.archived,
     attempts: s.attempts,
     errors: s.errors,

@@ -6,7 +6,7 @@ An iPhone-first Progressive Web App for 2–10 minute vocabulary sessions, built
 - **Home:** Học 2 / 5 / 10 phút, plus "Tiếp tục" for an interrupted session.
 - **Modes:** 🃏 Chill Cards · ⚡ Quick Play (meaning choice, gap-fill in the original sentence, typed recall) · 🔍 IELTS Detective (paraphrase ↔ term, meaning in context, easily confused pairs).
 - **Kho từ:** search over every entry, including mastered words in the archive, with full history and "Đưa về học lại" (restore).
-- **Max 🎤:** export a speaking-check prompt with stable IDs, then paste Max's JSON back to validate, preview and apply.
+- **Speaking with Max:** happens entirely in ChatGPT. The app writes each word's **Trạng thái** (Learning / Review / Mastered) and **Ngày ôn gần nhất** into the Sheet, so Max can read them and pick words to practise.
 - **Cài đặt:** connection, real sync status, recall rule, transparent schedule, voice, backup/restore.
 
 ## Architecture
@@ -23,7 +23,7 @@ iPhone (Home Screen PWA)                    Google (your account)
 ```
 
 - **Smallest backend:** one Apps Script file bound to the Sheet. It's free, needs no servers and no billing, and holds no API keys. It reads your private Sheet with your own Google authorisation. The app authenticates with a pairing token that you type into the app once; it lives in Script Properties and on your device, never in the code.
-- **Vocabulary stays in the Sheet.** The app never rewrites vocabulary cells. It only adds the `ID (app)` column and fills empty ID cells (details in [docs/SYNC.md](docs/SYNC.md)).
+- **Vocabulary stays in the Sheet.** The app never rewrites vocabulary content. It adds the `ID (app)` column, fills empty ID cells, and updates only `Trạng thái` and `Ngày ôn gần nhất` (details in [docs/SYNC.md](docs/SYNC.md)).
 - **Learning history is separate**, in its own spreadsheet, as the Sheet's "Hướng dẫn" requires ("Kết quả làm đề và lịch học được theo dõi riêng").
 - **Offline-first:** every answer is saved to IndexedDB first, queued, and synced later. Events have device-generated UUIDs, so retries and duplicate deliveries are harmless, and state is recomputed by replaying events, so devices can't overwrite each other.
 
@@ -31,19 +31,23 @@ iPhone (Home Screen PWA)                    Google (your account)
 
 - **Recall met** = typed correctly **without hints** on **3 different study dates** (configurable 1–6), at least **1** of them contextual (configurable 0–3), and the latest unassisted attempt correct.
   These never count: multiple-choice (recognition), "xem đáp án", Chill Cards self-rating ("Nhớ rồi"), retries within a session, anything with a hint. Several successes on one day count as one date.
-- Then the status becomes **"Chờ Max kiểm tra"**. A word becomes **Đã thuộc** (mastered) only when Max has also confirmed **understandable pronunciation** *and* **correct contextual use**. Mastered words leave the active queue and remain searchable in the archive. They are never deleted.
+- Then the word becomes **Đã thuộc** (mastered): it leaves the active queue and stays searchable in the archive. It is never deleted.
 - **Schedule (Leitner boxes):** the first graded attempt of each day decides. Unassisted recall moves the word up a box; recognition, a hint or "lơ mơ" keeps the box; wrong or revealed moves it down a box and schedules it for tomorrow. Intervals: 1 · 2 · 4 · 7 · 15 · 30 · 60 · 120 days.
 - **Maintenance** for mastered words after 30 · 90 · 180 days (in 5- and 10-minute sessions). Forgetting one returns it to study automatically, with its history kept.
 - No timers, no streaks, no negative scores. Wrong answers get a short explanation and come back later in the session.
 - Multiple-choice fairness: distractors never share a meaning with the answer, never come from the same term, and never come from entries whose notes link them as near-synonyms (e.g. *amend / tweak*). Those pairs appear instead as the deliberate "Phân biệt" exercise. If no safe distractors exist, the exercise type isn't offered. "Câu hỏi chưa ổn? Báo lại" voids that answer.
-- 🔊 Playback uses the iPhone's own voice and only plays on tap. It is labelled as a model, not as proof of pronunciation.
+- 🔊 Playback uses the iPhone's own voice and only plays on tap. It is labelled as a model, not as proof of pronunciation; speaking practice and feedback happen with Max in ChatGPT.
 
-## Max handoff
+## What the app writes into the Sheet (for Max)
 
-1. Max tab → choose words (those "Chờ Max" are preselected) → **Tạo lời nhắn cho Max** → copy and paste into the ChatGPT conversation with Max, ideally in **voice mode**.
-2. Max replies with JSON in format `ielts-max-result/v1`.
-3. Paste it into **Nhập kết quả từ Max** → **Kiểm tra**. You'll see errors (unknown IDs, bad values, future dates, duplicates), warnings (ID not in that export, term mismatch, batch already imported) and a before → after preview → **Áp dụng**.
-4. Rules: pronunciation `pass` is accepted only with `pronunciationEvidence: "audio"` and not in `mode: "text"`. Otherwise it stays **Chưa đánh giá**. A missing value stays "not assessed", and "not_assessed" never erases an earlier result. Every result records its origin (Max (ChatGPT), batch ID, mode, import time, device, SHA-256 of the pasted text, and the fact that the app can't verify authorship). The app has no button that approves a word without Max.
+| App state | `Trạng thái` | Notes |
+|---|---|---|
+| never studied | *(unchanged, normally `New`)* | the app never writes `New` |
+| studying, not due | `Learning` | |
+| due for review | `Review` | |
+| recall criteria met | `Mastered` | |
+
+`Ngày ôn gần nhất` = the last study date (it only moves forward). Writes happen only when the app's status for a word **changes**, so if Max or another chat edits a status, the app leaves it alone until it has news. It never replaces a `Mastered` that someone else set. A row in "Hướng dẫn" explains this to other chats. To turn it off, set Script Property `SHEET_WRITEBACK` to `off`.
 
 ---
 
@@ -56,7 +60,7 @@ iPhone (Home Screen PWA)                    Google (your account)
 4. In the function dropdown choose **`setup`** → **Run** → **Review permissions** → choose your account. Google will say *"Google hasn't verified this app"* because it's your own script: **Advanced → Go to … (unsafe) → Allow**.
    `setup` will:
    - add the column **`ID (app)`** after "Ghi chú / Lỗi dễ nhầm" and fill IDs for existing rows (no other cell changes),
-   - add one explanatory row **"Cột ID (app)"** to "Hướng dẫn", so other chats leave the column empty for new rows,
+   - add two explanatory rows to "Hướng dẫn" ("Cột ID (app)", "App cập nhật trạng thái"), so other chats and Max know what the app does,
    - create the spreadsheet **"IELTS Vocab App – Dữ liệu học (đừng sửa tay)"** in your Drive,
    - generate the **pairing token**.
 5. Open **Execution log** and copy the **token** (also available any time: Sheet menu **IELTS App → Hiện mã kết nối**).
@@ -64,7 +68,7 @@ iPhone (Home Screen PWA)                    Google (your account)
    *"Anyone" is needed because an iPhone web app can't send Google login cookies to Apps Script. Every request still needs the token, and without it the script returns `unauthorized` and no data.*
 7. Updating the backend later: paste the new code → **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. The URL stays the same.
 
-Optional: `installWeeklyBackup` (run once) makes a weekly copy of the data spreadsheet. `rotateToken` issues a new token if the old one leaks. Write-back of `Trạng thái`/`Ngày ôn gần nhất` is off by default; set Script Properties `WRITEBACK_STATUS` / `WRITEBACK_LAST_REVIEW` to `true` to enable it (see [docs/SYNC.md](docs/SYNC.md)).
+Optional: `installWeeklyBackup` (run once) makes a weekly copy of the data spreadsheet. `rotateToken` issues a new token if the old one leaks.
 
 ### 2. Host the app (free HTTPS)
 The repository includes [.github/workflows/pages.yml](.github/workflows/pages.yml), which tests the app, stamps the cache version and publishes `app/` to GitHub Pages:

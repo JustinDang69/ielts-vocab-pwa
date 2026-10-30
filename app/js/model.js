@@ -19,7 +19,6 @@ export const M = {
   config: { ...DEFAULT_CONFIG },
   settings: { voiceURI: '', rate: 0.9, preferredMode: 'quick' },
   conn: { url: '', token: '' },
-  maxExports: [],
   persisted: false,
 };
 
@@ -56,7 +55,6 @@ export async function reload() {
   M.config = { ...DEFAULT_CONFIG, ...(await M.db.getKv('config', {})) };
   M.settings = { ...M.settings, ...(await M.db.getKv('settings', {})) };
   M.conn = { url: '', token: '', ...(await M.db.getKv('conn', {})) };
-  M.maxExports = await M.db.getKv('maxExports', []);
   recompute();
 }
 
@@ -99,11 +97,11 @@ export async function checkMastery() {
 export function addEvent(type, wordId, data) { const e = makeEvent(type, wordId, data); return addEvents([e]).then(() => e); }
 
 // A word becomes Mastered (and leaves the active queue) only when recall criteria are
-// met AND Max confirmed pronunciation AND usage. Recorded as an explicit event.
+// met (see state.js). Recorded as an explicit event, so it never silently flips back.
 function masteryEvents() {
   const out = [];
   for (const s of M.states.values()) {
-    if (s.eligibleForMastery && s.inSheet) out.push(makeEvent('mastered', s.id, { reason: 'recall+max_pronunciation+max_usage' }));
+    if (s.eligibleForMastery && s.inSheet) out.push(makeEvent('mastered', s.id, { reason: 'recall_criteria' }));
   }
   return out;
 }
@@ -111,7 +109,6 @@ function masteryEvents() {
 export async function saveConfig(cfg) { M.config = { ...M.config, ...cfg }; await M.db.setKv('config', pick(M.config, ['requiredDates', 'requiredContextual'])); recompute(); emit('config'); }
 export async function saveSettings(s) { M.settings = { ...M.settings, ...s }; await M.db.setKv('settings', M.settings); emit('settings'); }
 export async function saveConn(c) { M.conn = { ...M.conn, ...c }; await M.db.setKv('conn', M.conn); emit('conn'); }
-export async function saveMaxExports(list) { M.maxExports = list; await M.db.setKv('maxExports', list); }
 
 function pick(o, keys) { return Object.fromEntries(keys.map((k) => [k, o[k]])); }
 
@@ -119,7 +116,7 @@ export async function getSession() { return M.db ? M.db.getKv('session') : null;
 export async function setSession(s) { await M.db.setKv('session', s); }
 
 export function counts() {
-  const c = { new: 0, learning: 0, review: 0, awaiting_max: 0, mastered: 0, removed: 0, due: 0 };
+  const c = { new: 0, learning: 0, review: 0, mastered: 0, removed: 0, due: 0 };
   for (const s of M.states.values()) {
     c[s.status] = (c[s.status] || 0) + 1;
     if (s.due && s.status !== 'new' && !s.archived && s.inSheet) c.due++;

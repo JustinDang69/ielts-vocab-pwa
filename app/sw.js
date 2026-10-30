@@ -2,16 +2,16 @@
 // Same-origin GETs are served cache-first, so the app opens with no network.
 // Requests to the Apps Script backend (other origin, POST) are never intercepted or cached:
 // sync data always comes from the live server or from IndexedDB, never from a stale cache.
-const VERSION = 'v1.0.0-a574d3acb8';
+const VERSION = 'v1.0.0-8e05ebe099';
 const CACHE = 'ielts-vocab-' + VERSION;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
   'js/main.js', 'js/model.js', 'js/store.js', 'js/sync.js', 'js/tts.js', 'js/demo-data.js',
   'js/core/dates.js', 'js/core/fields.js', 'js/core/csv.js', 'js/core/text.js', 'js/core/state.js',
-  'js/core/exercises.js', 'js/core/session.js', 'js/core/max.js', 'js/core/backup.js',
+  'js/core/exercises.js', 'js/core/session.js', 'js/core/backup.js',
   'js/ui/dom.js', 'js/ui/common.js', 'js/ui/home.js', 'js/ui/session-view.js', 'js/ui/library.js',
-  'js/ui/max-view.js', 'js/ui/settings.js',
+  'js/ui/settings.js',
 ];
 
 self.addEventListener('install', (e) => {

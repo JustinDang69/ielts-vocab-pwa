@@ -140,8 +140,8 @@ function feedbackView() {
       ${fb.requeued ? '<div class="small">🌱 Từ này sẽ quay lại thêm một lần trong phiên này.</div>' : ''}</div>`;
   }
   const partner = fb.partnerId ? entry(fb.partnerId) : null;
-  const milestone = st?.status === 'awaiting_max' && fb.becameAwaiting
-    ? '<div class="fb celebrate">🎉 Đủ điều kiện nhớ! Từ này đã <b>chờ Max kiểm tra</b> phát âm và cách dùng.</div>' : '';
+  const milestone = st?.status === 'mastered' && fb.becameMastered
+    ? '<div class="fb celebrate">🏆 Đã thuộc! Bạn đã tự nhớ từ này qua nhiều ngày. Từ được cất vào kho và thỉnh thoảng ôn duy trì.</div>' : '';
   return `${head}${milestone}
     <div class="card">${good ? brief(e) : wordInfo(e, { compact: true })}
       ${partner ? `<hr><p class="small muted">So sánh với:</p><div class="term">${esc(partner.fields.term)}</div><p>${esc(partner.fields.meaning)}</p>${partner.fields.note ? `<p class="small">${esc(partner.fields.note)}</p>` : ''}` : ''}
@@ -213,7 +213,7 @@ async function answer(result, root, go) {
     wordId: item.wordId, kind: item.kind, outcome: result.outcome, typo: result.typo, expected: result.expected,
     answer: result.answer, chosenId: result.chosenId, otherId: result.otherId, assisted: result.assisted,
     partnerId: item.partnerId, requeued, itemKey: data.itemKey, eventId: ev.eventId,
-    becameAwaiting: before !== 'awaiting_max' && state(item.wordId)?.status === 'awaiting_max',
+    becameMastered: before !== 'mastered' && state(item.wordId)?.status === 'mastered',
   };
   await save();
   schedule(3000);
@@ -225,7 +225,6 @@ function drawEnd(root, go) {
   const right = new Set(S.done.filter((d) => d.outcome === 'correct').map((d) => d.wordId));
   const solid = new Set(S.done.filter((d) => d.outcome === 'correct' && d.recallKind === 'unassisted_recall' && !d.assisted && !d.retry).map((d) => d.wordId));
   const again = new Set(S.done.filter((d) => NEG.has(d.outcome)).map((d) => d.wordId));
-  const awaiting = words.filter((id) => state(id)?.status === 'awaiting_max');
   const mastered = words.filter((id) => state(id)?.status === 'mastered');
   setSession(null);
   root.innerHTML = `
@@ -237,13 +236,11 @@ function drawEnd(root, go) {
         ${solid.size ? `<p>🧠 Tự nhớ ra, không gợi ý: <b>${solid.size}</b> từ</p>` : ''}
         ${S.mode === 'chill' ? '<p class="small muted">Chill Cards giúp làm quen. Để tính "nhớ chắc", hãy thử Quick Play hoặc Detective.</p>' : ''}
         ${again.size ? `<p>🌱 Sẽ gặp lại sớm: <b>${again.size}</b> từ — bình thường thôi, đó là cách trí nhớ hoạt động.</p>` : ''}
-        ${awaiting.length ? `<p>🎤 Sẵn sàng cho Max: ${awaiting.map((id) => `<b>${esc(entry(id)?.fields.term)}</b>`).join(', ')}</p>` : ''}
         ${mastered.length ? `<p>🏆 Đã thuộc: ${mastered.map((id) => `<b>${esc(entry(id)?.fields.term)}</b>`).join(', ')}</p>` : ''}
       </div>
       <div class="s-actions">
         <button class="btn primary big" data-act="home">Về trang chính</button>
         <button class="btn soft" data-act="more">Thêm 2 phút</button>
-        ${awaiting.length ? '<a class="btn ghost" href="#/max">Gửi cho Max →</a>' : ''}
       </div>
     </div>`;
   const mode = S.mode;

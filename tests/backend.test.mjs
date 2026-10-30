@@ -79,50 +79,55 @@ test('events: idempotent push, validation, pull since seq, dates stay text', () 
   assert.deepEqual(r3.pull.events[0].data, { outcome: 'correct' });
 });
 
-test('max_result: pronunciation pass without audio evidence is rejected server-side', () => {
+test('state mirror: stale snapshot does not overwrite newer; guide rows added once', () => {
   const g = fresh();
   const w = g.call({ action: 'sync', token: g.token(), sinceSeq: 0 }).vocab.entries[0].id;
-  const mk = (d) => ev(w, { type: 'max_result', data: { usage: 'pass', ...d } });
-  const r = g.call({ action: 'sync', token: g.token(), sinceSeq: 0, events: [
-    mk({ pronunciation: 'pass', pronunciationEvidence: 'transcript' }),
-    mk({ pronunciation: 'pass', pronunciationEvidence: 'audio' }),
-    ev('v-unknown1', { type: 'max_result', data: { pronunciation: 'not_assessed', usage: 'pass' } }),
-  ] });
-  assert.equal(r.push.accepted.length, 1);
-  assert.deepEqual(r.push.rejected.map((x) => x.reason), ['pronunciation_without_audio', 'unknown_word']);
-});
-
-test('state mirror: stale snapshot does not overwrite newer; write-back off by default', () => {
-  const g = fresh();
-  const w = g.call({ action: 'sync', token: g.token(), sinceSeq: 0 }).vocab.entries[0].id;
-  const before = g.vocab.table();
   g.call({ action: 'pushState', token: g.token(), states: [{ wordId: w, status: 'learning', sheetStatus: 'Learning', computedFromSeq: 5, lastStudyDate: '2026-11-01' }] });
   const r = g.call({ action: 'pushState', token: g.token(), states: [{ wordId: w, status: 'new', computedFromSeq: 2 }] });
   assert.equal(r.stale, 1);
   const ws = g.data().getSheetByName('WordState').table();
   assert.equal(ws[1][2], 'learning');
-  assert.deepEqual(g.vocab.table(), before, 'vocab tab untouched when write-back is off');
+  g.call({ action: 'sync', token: g.token(), sinceSeq: 0 });
+  const guide = g.bound.getSheetByName('Hướng dẫn').table().map((x) => x[0]);
+  assert.equal(guide.filter((x) => x === 'App cập nhật trạng thái').length, 1);
+  assert.equal(guide.filter((x) => x === 'Cột ID (app)').length, 1);
 });
 
-test('optional write-back: only dropdown values, never downgrades Mastered, only that row', () => {
-  const g = createGas({ vocabRows: [HEAD, row('amend', 'Sửa đổi'), row('tweak', 'Điều chỉnh', { 'Trạng thái': 'Mastered' })] });
+test('write-back (on by default): only changed rows/cells, never New, never overrides a Mastered set by others', () => {
+  const g = createGas({ vocabRows: [HEAD, row('amend', 'Sửa đổi'), row('tweak', 'Điều chỉnh', { 'Trạng thái': 'Mastered' }), row('curb', 'Kiềm chế')] });
   g.ctx.setup();
-  g.props.set('WRITEBACK_STATUS', 'true');
-  g.props.set('WRITEBACK_LAST_REVIEW', 'true');
   const es = g.call({ action: 'sync', token: g.token(), sinceSeq: 0 }).vocab.entries;
-  const before = g.vocab.table();
-  g.call({ action: 'pushState', token: g.token(), states: [
-    { wordId: es[0].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-01', computedFromSeq: 1 },
-    { wordId: es[1].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-01', computedFromSeq: 1 },
-    { wordId: es[0].id + 'x', sheetStatus: 'Chờ Max', computedFromSeq: 1 },
-  ] });
-  const t = g.vocab.table();
   const S = HEAD.indexOf('Trạng thái'), D = HEAD.indexOf('Ngày ôn gần nhất');
+  const before = g.vocab.table();
+  const push = (states) => g.call({ action: 'pushState', token: g.token(), states: states.map((x) => ({ computedFromSeq: 1, ...x })) });
+  push([
+    { wordId: es[0].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-01' },
+    { wordId: es[1].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-01' },
+    { wordId: es[2].id, sheetStatus: '' },
+    { wordId: 'v-notinsheet', sheetStatus: 'Learning' },
+  ]);
+  let t = g.vocab.table();
   assert.equal(t[1][S], 'Learning');
-  assert.equal(t[1][D], '2026-11-01');
-  assert.equal(t[2][S], 'Mastered', 'Mastered is never downgraded');
+  assert.equal(t[1][D], '2026-11-01', 'date stays text');
+  assert.equal(t[2][S], 'Mastered', 'Mastered set by someone else is kept');
+  assert.equal(t[3][S], 'New', 'never-studied word untouched');
   for (let r = 0; r < t.length; r++) for (let c = 0; c < t[0].length; c++) {
     if ((r === 1 || r === 2) && (c === S || c === D)) continue;
-    assert.equal(t[r][c], before[r][c]);
+    assert.equal(t[r][c], before[r][c], `cell ${r},${c} must not change`);
   }
+  // another chat edits the status; the app does not fight it while its own status is unchanged
+  g.vocab.getRange(2, S + 1).setValue('Review');
+  push([{ wordId: es[0].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-01' }]);
+  assert.equal(g.vocab.table()[1][S], 'Review');
+  // ...but writes again when the app has news; and may replace a Mastered it wrote itself
+  push([{ wordId: es[0].id, sheetStatus: 'Mastered', lastStudyDate: '2026-11-03' }]);
+  assert.equal(g.vocab.table()[1][S], 'Mastered');
+  push([{ wordId: es[0].id, sheetStatus: 'Review', lastStudyDate: '2026-11-02' }]);
+  t = g.vocab.table();
+  assert.equal(t[1][S], 'Review', 'forgotten word goes back to Review');
+  assert.equal(t[1][D], '2026-11-03', 'last-review date never moves backwards');
+  // can be switched off
+  g.props.set('SHEET_WRITEBACK', 'off');
+  push([{ wordId: es[0].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-09' }]);
+  assert.equal(g.vocab.table()[1][S], 'Review');
 });

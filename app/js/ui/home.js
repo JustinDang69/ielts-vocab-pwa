@@ -22,7 +22,7 @@ export async function renderHome(root, go) {
       <div class="stats card">
         <a href="#/library?f=review"><b>${c.due}</b><span>cần ôn</span></a>
         <a href="#/library?f=new"><b>${c.new}</b><span>từ mới</span></a>
-        <a href="#/max"><b>${c.awaiting_max}</b><span>chờ Max</span></a>
+        <a href="#/library?f=learning"><b>${c.learning}</b><span>đang học</span></a>
         <a href="#/library?f=mastered"><b>${c.mastered}</b><span>đã thuộc</span></a>
       </div>
       ${!total ? `<div class="card empty">Chưa có từ nào. ${M.mode === 'live' ? 'Vào <a href="#/settings">Cài đặt</a> để kết nối và đồng bộ.' : ''}</div>` : ''}
