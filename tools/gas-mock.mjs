@@ -32,6 +32,7 @@ class Range {
   setValue(v) { this.sheet.write(this.r, this.c, v); this.sheet.ss.writes++; return this; }
   setNumberFormat(f) { this.cells().flat().forEach((c) => { c.fmt = f; }); return this; }
   setNote(n) { this.sheet.cell(this.r, this.c).note = n; return this; }
+  setDataValidation(rule) { this.sheet.validations[this.c] = rule.list; return this; }
   getDataValidation() {
     const list = this.sheet.validations[this.c];
     if (!list) return null;
@@ -62,6 +63,7 @@ class Sheet {
   getLastRow() { for (let i = this.grid.length; i > 0; i--) if (this.grid[i - 1].some((c) => c.display() !== '')) return i; return 0; }
   getLastColumn() { let m = 0; for (const row of this.grid) for (let j = row.length; j > m; j--) if (row[j - 1].display() !== '') { m = j; break; } return m; }
   getMaxColumns() { return this.maxCols; }
+  getMaxRows() { return Math.max(1000, this.grid.length); }
   insertColumnAfter() { this.maxCols++; return this; }
   getRange(r, c, nr = 1, nc = 1) { return new Range(this, r, c, nr, nc); }
   appendRow(vals) { const r = this.getLastRow() + 1; vals.forEach((v, j) => this.write(r, j + 1, v)); return this; }
@@ -77,11 +79,17 @@ class Spreadsheet {
   getUrl() { return `https://docs.google.com/spreadsheets/d/${this.id}/edit`; }
   getSheets() { return this.sheets; }
   getSheetByName(n) { return this.sheets.find((s) => s.name === n) || null; }
-  insertSheet(n, rows) { const s = new Sheet(this, n, rows); this.sheets.push(s); return s; }
+  // insertSheet(name, index) like Apps Script; an array as 2nd argument seeds rows (test helper)
+  insertSheet(n, arg) { const s = new Sheet(this, n, Array.isArray(arg) ? arg : []); this.sheets.push(s); return s; }
   copy(name) { const c = new Spreadsheet(name); c.sheets = this.sheets.map((s) => { const t = new Sheet(c, s.name, s.table()); return t; }); registry.set(c.id, c); return c; }
 }
 
 const registry = new Map();
+
+function zoned(d, tz) {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }).formatToParts(d);
+  return Object.fromEntries(parts.map((x) => [x.type, x.value]));
+}
 
 export function createGas({ vocabRows, guideRows, statusList = ['New', 'Learning', 'Review', 'Mastered'] }) {
   const bound = new Spreadsheet('Ielts Words and Phrases', 'vocab');
@@ -102,6 +110,10 @@ export function createGas({ vocabRows, guideRows, statusList = ['New', 'Learning
       create: (name) => { const s = new Spreadsheet(name); s.insertSheet('Sheet1'); registry.set(s.id, s); return s; },
       getUi: () => { throw new Error('No UI in this context'); },
       DataValidationCriteria: { VALUE_IN_LIST: 'VALUE_IN_LIST' },
+      newDataValidation: () => {
+        const r = { list: null, requireValueInList(l) { r.list = l; return r; }, setAllowInvalid() { return r; }, build() { return r; } };
+        return r;
+      },
     },
     PropertiesService: { getScriptProperties: () => ({
       getProperty: (k) => (props.has(k) ? props.get(k) : null),
@@ -114,7 +126,22 @@ export function createGas({ vocabRows, guideRows, statusList = ['New', 'Learning
     }) },
     Utilities: {
       getUuid: () => crypto.randomUUID(),
-      formatDate: (d) => d.toISOString().slice(0, 16).replace('T', ' '),
+      formatDate: (d, tz, fmt) => {
+        const p = zoned(d, tz);
+        return fmt.replace('yyyy', p.year).replace('MM', p.month).replace('dd', p.day).replace('HH', p.hour).replace('mm', p.minute).replace('ss', p.second);
+      },
+      // only the pattern Code.gs uses: 'yyyy-MM-dd HH:mm:ss', interpreted in `tz`
+      parseDate: (str, tz, fmt) => {
+        if (fmt !== 'yyyy-MM-dd HH:mm:ss') throw new Error('mock parseDate: unsupported format ' + fmt);
+        const [y, mo, d, h, mi, se] = str.match(/\d+/g).map(Number);
+        const wall = Date.UTC(y, mo - 1, d, h, mi, se);
+        let t = wall;
+        for (let k = 0; k < 2; k++) { const p = zoned(new Date(t), tz); t = wall - (Date.UTC(+p.year, p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - t); }
+        return new Date(t);
+      },
+      computeDigest: (alg, s) => [...crypto.createHash('sha256').update(String(s), 'utf8').digest()].map((b) => (b > 127 ? b - 256 : b)),
+      DigestAlgorithm: { SHA_256: 'SHA_256' },
+      Charset: { UTF_8: 'UTF_8' },
     },
     ContentService: {
       createTextOutput: (s) => ({ s, setMimeType() { return this; }, getContent() { return this.s; } }),

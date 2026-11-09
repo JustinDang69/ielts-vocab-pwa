@@ -16,7 +16,7 @@ export const DEFAULT_CONFIG = {
   timezone: 'Australia/Sydney',
 };
 
-export const EVENT_TYPES = ['review', 'mastered', 'restore', 'flag_item'];
+export const EVENT_TYPES = ['review', 'speaking', 'mastered', 'restore', 'flag_item'];
 
 // Outcomes of a review event.
 //  correct      – answered correctly
@@ -76,6 +76,14 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
     return states.get(id);
   };
   for (const e of entries) get(e.id);
+  // Schedule: only the first graded attempt (app review or Speaking result) of a study date moves the box.
+  const grade = (s, day, r) => {
+    if (s.gradedDays[day]) return;
+    s.gradedDays[day] = r;
+    if (r === 'up') s.box = Math.min(s.box + 1, cfg.intervals.length - 1);
+    if (r === 'down') s.box = Math.max(0, s.box - 1);
+    s.nextReview = addDays(day, r === 'down' ? 1 : cfg.intervals[s.box]);
+  };
 
   // "This question was unfair" voids the review it was raised on.
   const voided = new Set(events.filter((e) => e.type === 'flag_item' && e.data?.voidEventId).map((e) => e.data.voidEventId));
@@ -92,7 +100,7 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
       if (d.assisted) s.hintsUsed++;
       if (!s.firstSeen) s.firstSeen = ev.studyDate;
       if (s.archived) {
-        if (d.maintenance) { s.lastMaintenance = ev.studyDate; s.maintenanceCount++; }
+        if (d.maintenance) { s.lastMaintenance = ev.studyDate; s.maintenanceCount++; s.maintenanceForce = false; }
         continue;
       }
       s.lastStudyDate = ev.studyDate;
@@ -106,18 +114,37 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
           if (d.contextual) s.contextualDates.add(ev.studyDate);
         }
       }
-      // Schedule: only the first graded attempt of a study date moves the box.
-      if (graded && !s.gradedDays[ev.studyDate] && d.outcome !== 'other_term') {
-        let r = 'hold';
-        if (NEGATIVE.has(d.outcome)) r = 'down';
-        else if (d.outcome === 'correct' && unassistedRecall) r = 'up';
-        s.gradedDays[ev.studyDate] = r;
-        if (r === 'up') s.box = Math.min(s.box + 1, cfg.intervals.length - 1);
-        if (r === 'down') s.box = Math.max(0, s.box - 1);
-        s.nextReview = addDays(ev.studyDate, r === 'down' ? 1 : cfg.intervals[s.box]);
+      if (graded && d.outcome !== 'other_term') {
+        grade(s, ev.studyDate, NEGATIVE.has(d.outcome) ? 'down' : d.outcome === 'correct' && unassistedRecall ? 'up' : 'hold');
       } else if (!s.nextReview) {
         s.nextReview = addDays(ev.studyDate, 1);
       }
+    } else if (ev.type === 'speaking') {
+      // A result written by the Speaking chatbot into the "Speaking Results" tab.
+      s.history.push(ev);
+      const rec = { at: ev.studyDate, ts: ev.ts, source: d.source, feedback: d.feedback, sentence: d.sentence, support: d.support, evidence: d.evidence };
+      // pronunciation only counts as assessed when the bot heard audio (the server enforces this too)
+      if ((d.pronunciation === 'pass' || d.pronunciation === 'needs_work') && d.evidence === 'audio') s.speakPron = { ...rec, value: d.pronunciation };
+      if (d.usage !== 'pass' && d.usage !== 'needs_work') continue; // no usage verdict: history only
+      s.speakUsage = { ...rec, value: d.usage };
+      const own = d.support === 'none'; // said unprompted: no hint, not repeating a model sentence
+      s.attempts++;
+      if (d.usage === 'needs_work') s.errors++;
+      if (!own) s.hintsUsed++;
+      if (!s.firstSeen) s.firstSeen = ev.studyDate;
+      if (s.archived) {
+        // Mastered words stay mastered: a good result counts as maintenance, a weak one brings it forward.
+        if (d.usage === 'pass' && own) { s.lastMaintenance = ev.studyDate; s.maintenanceCount++; s.maintenanceForce = false; }
+        else if (d.usage === 'needs_work') s.maintenanceForce = true;
+        continue;
+      }
+      s.lastStudyDate = ev.studyDate;
+      // Using the word correctly in your own sentence, unprompted = contextual unassisted recall.
+      if (own) {
+        s.lastUnassisted = d.usage === 'pass' ? 'correct' : 'wrong';
+        if (d.usage === 'pass') { s.successDates.add(ev.studyDate); s.contextualDates.add(ev.studyDate); }
+      }
+      grade(s, ev.studyDate, d.usage === 'needs_work' ? 'down' : own ? 'up' : 'hold');
     } else if (ev.type === 'mastered') {
       if (!s.archived) { s.archived = true; s.masteredAt = ev.studyDate; s.history.push(ev); }
     } else if (ev.type === 'restore') {
@@ -144,7 +171,7 @@ export function computeStates(entries, events, config = DEFAULT_CONFIG, today) {
       const base = s.lastMaintenance || s.masteredAt;
       const iv = cfg.maintenanceIntervals[Math.min(s.maintenanceCount, cfg.maintenanceIntervals.length - 1)];
       s.nextMaintenance = base ? addDays(base, iv) : null;
-      s.maintenanceDue = !!s.nextMaintenance && today && s.nextMaintenance <= today;
+      s.maintenanceDue = (!!s.nextMaintenance && !!today && s.nextMaintenance <= today) || !!s.maintenanceForce;
     }
     if (!s.inSheet) s.status = 'removed';
     else if (s.archived) s.status = 'mastered';
@@ -183,6 +210,8 @@ export function stateSnapshot(s, entry) {
     successDates: [...s.successDates].sort().join(' '),
     contextualDates: [...s.contextualDates].sort().join(' '),
     recallMet: s.recallMet,
+    maxPronunciation: s.speakPron?.value || '', // legacy column names, now the latest Speaking results
+    maxUsage: s.speakUsage?.value || '',
     archived: s.archived,
     attempts: s.attempts,
     errors: s.errors,

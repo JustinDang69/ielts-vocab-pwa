@@ -13,6 +13,9 @@
  *     dropdown) and "Ngày ôn gần nhất" for a row when the app's state for it changes, so
  *     Max (ChatGPT) can read them. Never writes "New", never overwrites a "Mastered"
  *     that someone else set. Turn off with Script Property SHEET_WRITEBACK = off.
+ *   - creates the tab "Speaking Results" (once). A Speaking chatbot appends one row per
+ *     result there; on every sync each unprocessed row becomes exactly one "speaking"
+ *     event (deterministic event ID) and the row's "Xử lý (app)" cell is marked.
  * Everything else (review history, schedule) lives in a SEPARATE
  * spreadsheet "IELTS Vocab App – Dữ liệu học", as the Sheet's "Hướng dẫn" requires.
  *
@@ -35,7 +38,7 @@ var EVENT_COLS = ['seq', 'eventId', 'type', 'wordId', 'ts', 'studyDate', 'device
 var STATE_COLS = ['wordId', 'term', 'status', 'sheetStatus', 'box', 'nextReview', 'lastStudyDate', 'successDates',
   'contextualDates', 'recallMet', 'maxPronunciation', 'maxUsage', 'archived', 'attempts', 'errors', 'hintsUsed',
   'computedFromSeq', 'deviceId', 'updatedAt', 'sheetStatusWritten'];
-// (maxPronunciation / maxUsage are unused legacy columns, kept so existing tabs stay aligned)
+// (maxPronunciation / maxUsage hold the latest Speaking results; names kept so existing tabs stay aligned)
 var ID_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{2,40}$/;
 var GUIDE_TEXT = 'Do app học từ vựng của Justin tự tạo (dạng v-xxxxxxxx) để nhận diện từng hàng. Khi thêm hàng mới: để trống ô này. ' +
   'Không sửa, xóa hoặc sao chép ID sang hàng khác. Khi bổ sung vào hàng cũ: giữ nguyên ID của hàng đó.';
@@ -43,10 +46,40 @@ var GUIDE_ROWS = [
   ['Cột ID (app)', GUIDE_TEXT],
   ['App cập nhật trạng thái', 'App học từ vựng tự ghi cột Trạng thái và Ngày ôn gần nhất sau khi Justin ôn: Learning = đang học; ' +
     'Review = đến hạn ôn lại; Mastered = đã tự nhớ đúng, không gợi ý, ở 3 ngày khác nhau (có 1 lần trong câu). ' +
-    'Max có thể đọc hai cột này để chọn từ luyện nói. Hàng mới vẫn ghi New như cũ; app không ghi đè Mastered do người hoặc chat khác đặt.']
+    'Max có thể đọc hai cột này để chọn từ luyện nói. Hàng mới vẫn ghi New như cũ; app không ghi đè Mastered do người hoặc chat khác đặt.'],
+  ['Tab Speaking Results', 'Chatbot Speaking ghi mỗi kết quả thành MỘT HÀNG MỚI ở cuối tab Speaking Results (ID (app) lấy từ tab Vocab & Phrases). ' +
+    'Không sửa, xóa hay sắp xếp hàng cũ; không ghi vào cột "Xử lý (app)" — app tự đánh dấu khi đã nhận. Không sửa Trạng thái/Ngày ôn gần nhất.']
 ];
 var MAX_EVENTS_PER_CALL = 500;
 var MAX_PULL = 1000;
+var APP_TZ = 'Australia/Sydney';
+
+// Speaking results tab (in the vocabulary spreadsheet, so a chatbot with access to it can append).
+var SPEAKING_SHEET = 'Speaking Results';
+var SPEAKING_HEADERS = {
+  id: 'ID (app)', term: 'Từ / Phrase', time: 'Thời gian', usage: 'Cách dùng', support: 'Mức hỗ trợ',
+  pronunciation: 'Phát âm', evidence: 'Bằng chứng phát âm', sentence: 'Câu Justin nói', feedback: 'Nhận xét',
+  source: 'Nguồn', processed: 'Xử lý (app)'
+};
+var SPEAKING_ORDER = ['id', 'term', 'time', 'usage', 'support', 'pronunciation', 'evidence', 'sentence', 'feedback', 'source', 'processed'];
+// Accepted spellings (compared without accents/case). Canonical value first.
+var SPEAKING_VALUES = {
+  usage: { pass: ['pass', 'dat', 'ok'], needs_work: ['needs_work', 'needs work', 'chua dat', 'can luyen', 'fail'],
+    not_assessed: ['not_assessed', 'not assessed', 'chua danh gia', 'n/a', 'na', '-', ''] },
+  support: { none: ['none', 'khong', 'tu noi', 'khong goi y', 'no'], hint: ['hint', 'goi y', 'co goi y'],
+    model: ['model', 'theo mau', 'doc theo mau', 'nhac lai', 'repeat'], unknown: [''] },
+  evidence: { audio: ['audio', 'am thanh', 'giong noi', 'voice'], transcript: ['transcript', 'text', 'van ban'], none: ['none', 'khong', ''] }
+};
+SPEAKING_VALUES.pronunciation = SPEAKING_VALUES.usage;
+var SPEAKING_NOTES = {
+  id: 'Bắt buộc. Lấy đúng ID (app) của từ trong tab Vocab & Phrases (dạng v-xxxxxxxx).',
+  time: 'YYYY-MM-DD HH:mm, giờ Australia/Sydney.',
+  usage: 'pass = tự dùng đúng nghĩa trong câu; needs_work = dùng sai/chưa tự nhiên; not_assessed = chưa đánh giá.',
+  support: 'none = tự nói, không gợi ý; hint = có gợi ý (nghĩa, chữ đầu, khung câu); model = nhắc lại/đọc theo mẫu.',
+  pronunciation: 'pass / needs_work chỉ khi bot thật sự nghe audio. Chỉ có transcript → not_assessed.',
+  evidence: 'audio = bot nghe giọng nói; transcript = chỉ có chữ; none = không có.',
+  processed: 'App tự ghi. Chatbot để trống.'
+};
 
 // ---------------------------------------------------------------- menu & setup
 
@@ -73,6 +106,7 @@ function setup() {
   try {
     ensureIdColumn_(vocabSheet_());
     ensureGuideRows_();
+    ensureSpeakingTab_();
     res = assignIds_();
   } finally {
     lock.releaseLock();
@@ -160,10 +194,17 @@ function sync_(req) {
     var known = {};
     vocab.entries.forEach(function (x) { known[x.id] = true; });
     var push = appendEvents_(Array.isArray(req.events) ? req.events.slice(0, MAX_EVENTS_PER_CALL) : [], known, req.deviceId);
+    var speaking;
+    try {
+      speaking = ingestSpeaking_(vocab.entries, known);
+    } catch (err) {
+      log_('speaking_error', String(err && err.stack || err));
+      speaking = { error: String(err && err.message || err) };
+    }
     var pull = readEventsSince_(Number(req.sinceSeq) || 0);
     return {
       ok: true, apiVersion: API_VERSION, serverTime: new Date().toISOString(),
-      ids: ids, vocab: vocab, push: push, pull: pull
+      ids: ids, vocab: vocab, push: push, speaking: speaking, pull: pull
     };
   } finally {
     lock.releaseLock();
@@ -360,10 +401,11 @@ function log_(action, detail) {
 
 // ---------------------------------------------------------------- events
 
-function validateEvent_(ev, known) {
+// `trusted` = created by this script (speaking ingestion); devices can never send "speaking" events.
+function validateEvent_(ev, known, trusted) {
   if (!ev || typeof ev !== 'object') return 'not_object';
   if (typeof ev.eventId !== 'string' || !/^[A-Za-z0-9_-]{8,64}$/.test(ev.eventId)) return 'bad_eventId';
-  if (EVENT_TYPES.indexOf(ev.type) < 0) return 'bad_type';
+  if (EVENT_TYPES.indexOf(ev.type) < 0 && !(trusted && ev.type === 'speaking')) return 'bad_type';
   if (typeof ev.wordId !== 'string' || !ev.wordId || ev.wordId.length > 64) return 'bad_wordId';
   var t = Date.parse(ev.ts);
   if (!ev.ts || isNaN(t)) return 'bad_ts';
@@ -377,7 +419,7 @@ function validateEvent_(ev, known) {
 
 function eventsSheet_() { return dataSpreadsheet_().getSheetByName('Events'); }
 
-function appendEvents_(events, known, deviceId) {
+function appendEvents_(events, known, deviceId, trusted) {
   var res = { accepted: [], duplicates: [], rejected: [] };
   if (!events.length) return res;
   var sh = eventsSheet_();
@@ -392,7 +434,7 @@ function appendEvents_(events, known, deviceId) {
   var now = new Date().toISOString();
   events.forEach(function (ev) {
     if (ev && existing[ev.eventId]) { res.duplicates.push(ev.eventId); return; }
-    var why = validateEvent_(ev, known);
+    var why = validateEvent_(ev, known, trusted);
     if (why) { res.rejected.push({ eventId: ev && ev.eventId, reason: why }); return; }
     existing[ev.eventId] = true;
     lastSeq++;
@@ -429,6 +471,166 @@ function readEventsSince_(sinceSeq) {
     }
   }
   return { events: out, lastSeq: lastSeq, more: more };
+}
+
+// ---------------------------------------------------------------- Speaking results
+
+function ensureSpeakingTab_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(SPEAKING_SHEET);
+  if (sh) return sh;
+  sh = ss.insertSheet(SPEAKING_SHEET, ss.getSheets().length);
+  var heads = SPEAKING_ORDER.map(function (k) { return SPEAKING_HEADERS[k]; });
+  sh.getRange(1, 1, 1, heads.length).setValues([heads]);
+  sh.setFrozenRows(1);
+  var rows = Math.max(sh.getMaxRows() - 1, 1);
+  sh.getRange(2, 1, rows, heads.length).setNumberFormat('@'); // keep times/IDs as plain text
+  ['usage', 'support', 'pronunciation', 'evidence'].forEach(function (k) {
+    var list = Object.keys(SPEAKING_VALUES[k]).filter(function (v) { return v !== 'unknown'; });
+    var rule = SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(true).build();
+    sh.getRange(2, SPEAKING_ORDER.indexOf(k) + 1, rows, 1).setDataValidation(rule);
+  });
+  Object.keys(SPEAKING_NOTES).forEach(function (k) {
+    sh.getRange(1, SPEAKING_ORDER.indexOf(k) + 1).setNote(SPEAKING_NOTES[k]);
+  });
+  log_('speaking_tab_created', SPEAKING_SHEET);
+  return sh;
+}
+
+function plain_(s) {
+  return String(s == null ? '' : s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/g, 'd').replace(/Đ/g, 'D')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/** Canonical value for a Speaking field, or null if the text is not an accepted spelling. */
+function speakingValue_(field, raw) {
+  var v = plain_(raw);
+  var map = SPEAKING_VALUES[field];
+  var keys = Object.keys(map);
+  for (var i = 0; i < keys.length; i++) if (map[keys[i]].indexOf(v) >= 0) return keys[i];
+  return null;
+}
+
+function sha256Hex_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8)
+    .map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+}
+
+/** Accepts a Sheets date value, "YYYY-MM-DD", "YYYY-MM-DD HH:mm[:ss]" (Sydney time) or ISO with offset. */
+function speakingTime_(raw, shown, now) {
+  var d = null;
+  if (Object.prototype.toString.call(raw) === '[object Date]' && !isNaN(raw)) d = raw;
+  else {
+    var s = String(shown || '').trim();
+    if (!s) return { missing: true, ts: now.toISOString(), studyDate: Utilities.formatDate(now, APP_TZ, 'yyyy-MM-dd') };
+    var m = s.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (m) {
+      var hh = m[2] ? ('0' + m[2]).slice(-2) : '12';
+      d = Utilities.parseDate(m[1] + ' ' + hh + ':' + (m[3] || '00') + ':' + (m[4] || '00'), APP_TZ, 'yyyy-MM-dd HH:mm:ss');
+    } else if (/(Z|[+-]\d{2}:?\d{2})$/.test(s) && !isNaN(Date.parse(s))) {
+      d = new Date(s);
+    } else {
+      return { error: 'Thời gian không đúng dạng YYYY-MM-DD HH:mm' };
+    }
+  }
+  if (d.getTime() > now.getTime() + 3600 * 1000) return { error: 'Thời gian nằm ở tương lai' };
+  return { ts: d.toISOString(), studyDate: Utilities.formatDate(d, APP_TZ, 'yyyy-MM-dd') };
+}
+
+/**
+ * Turns every unprocessed row of "Speaking Results" into one "speaking" event.
+ * Exactly-once: (1) a row whose "Xử lý (app)" cell is filled is skipped; (2) the event ID is
+ * a hash of the row's content, so even if marking the cell failed, re-processing is a
+ * duplicate that appendEvents_ ignores. Rows with problems are marked "✗ …" and not counted;
+ * clearing that cell after fixing the row makes the app read it again.
+ * Caller must hold the script lock.
+ */
+function ingestSpeaking_(entries, known) {
+  var out = { accepted: 0, duplicates: 0, errors: 0, tests: 0 };
+  var sh = ensureSpeakingTab_();
+  var last = sh.getLastRow(), lastCol = sh.getLastColumn();
+  if (last < 2) return out;
+  var head = sh.getRange(1, 1, 1, lastCol).getDisplayValues()[0];
+  var col = {};
+  var wanted = {};
+  SPEAKING_ORDER.forEach(function (k) { wanted[normHeader_(SPEAKING_HEADERS[k])] = k; });
+  head.forEach(function (h, i) { var k = wanted[normHeader_(h)]; if (k && col[k] === undefined) col[k] = i; });
+  if (col.id === undefined || col.processed === undefined) return { error: 'Tab Speaking Results thiếu cột "ID (app)" hoặc "Xử lý (app)"' };
+  var shown = sh.getRange(2, 1, last - 1, lastCol).getDisplayValues();
+  var rawTime = col.time !== undefined ? sh.getRange(2, col.time + 1, last - 1, 1).getValues() : null;
+  var byId = {}, byTerm = {};
+  entries.forEach(function (e) {
+    byId[e.id] = e;
+    var t = plain_(e.fields.term);
+    (byTerm[t] = byTerm[t] || []).push(e);
+  });
+  var now = new Date();
+  var stamp = Utilities.formatDate(now, APP_TZ, 'yyyy-MM-dd HH:mm');
+  var marks = [], pending = [];
+  for (var i = 0; i < shown.length; i++) {
+    var r = shown[i];
+    var get = function (k) { return col[k] === undefined ? '' : String(r[col[k]] == null ? '' : r[col[k]]).trim(); };
+    if (get('processed')) continue;
+    var row = { n: i + 2, id: get('id'), usageRaw: get('usage') };
+    var term = get('term'), pronRaw = get('pronunciation');
+    if (!row.id && !term && !row.usageRaw && !pronRaw) continue; // empty row
+    var fail = function (why) { out.errors++; marks.push({ row: row, text: '✗ ' + why }); };
+    if (/^test/i.test(row.id)) { out.tests++; marks.push({ row: row, text: '🧪 App đã nhận hàng thử lúc ' + stamp + ' (không tính vào tiến độ)' }); continue; }
+    var entry = row.id ? byId[row.id] : null;
+    if (row.id && !entry) { fail('ID không có trong Vocab & Phrases'); continue; }
+    if (!row.id) {
+      var cands = byTerm[plain_(term)] || [];
+      if (cands.length !== 1) { fail(cands.length ? 'Thiếu ID (app): có nhiều hàng cùng từ này' : 'Thiếu ID (app) và không tìm thấy từ'); continue; }
+      entry = cands[0];
+    } else if (term && plain_(term) !== plain_(entry.fields.term)) {
+      fail('Từ không khớp với ID (ID này là "' + entry.fields.term + '")'); continue;
+    }
+    var v = {
+      usage: speakingValue_('usage', row.usageRaw), pronunciation: speakingValue_('pronunciation', pronRaw),
+      support: speakingValue_('support', get('support')), evidence: speakingValue_('evidence', get('evidence'))
+    };
+    var bad = Object.keys(v).filter(function (k) { return v[k] === null; }).map(function (k) { return SPEAKING_HEADERS[k]; });
+    if (bad.length) { fail('Giá trị không hợp lệ ở cột: ' + bad.join(', ')); continue; }
+    if (v.usage === 'not_assessed' && v.pronunciation === 'not_assessed') { fail('Chưa có kết quả Cách dùng hoặc Phát âm'); continue; }
+    var t = speakingTime_(rawTime ? rawTime[i][0] : '', get('time'), now);
+    if (t.error) { fail(t.error); continue; }
+    var notes = [];
+    // a transcript alone cannot establish pronunciation quality
+    if (v.pronunciation !== 'not_assessed' && v.evidence !== 'audio') { v.pronunciation = 'not_assessed'; notes.push('phát âm không có audio → chưa đánh giá'); }
+    if (v.support === 'unknown') notes.push('thiếu Mức hỗ trợ → không tính là tự nói');
+    if (t.missing) notes.push('không có Thời gian → dùng lúc app nhận');
+    if (!row.id) notes.push('ID suy ra từ cột Từ / Phrase: ' + entry.id);
+    var data = {
+      usage: v.usage, pronunciation: v.pronunciation, evidence: v.evidence, support: v.support,
+      sentence: get('sentence').slice(0, 500), feedback: get('feedback').slice(0, 1000),
+      source: get('source').slice(0, 80) || SPEAKING_SHEET, sheetRow: row.n, time: get('time').slice(0, 40)
+    };
+    var fingerprint = [entry.id, get('time'), row.usageRaw, get('support'), pronRaw, get('evidence'), data.sentence, data.feedback, data.source].join('\u241F');
+    pending.push({
+      row: row, notes: notes,
+      ev: { eventId: 'sp-' + sha256Hex_(fingerprint).slice(0, 40), type: 'speaking', wordId: entry.id, ts: t.ts, studyDate: t.studyDate, deviceId: 'speaking-tab', data: data }
+    });
+  }
+  if (pending.length) {
+    var res = appendEvents_(pending.map(function (p) { return p.ev; }), known, 'speaking-tab', true);
+    var rejected = {};
+    res.rejected.forEach(function (x) { rejected[x.eventId] = x.reason; });
+    pending.forEach(function (p) {
+      var extra = p.notes.length ? ' · ' + p.notes.join('; ') : '';
+      if (res.accepted.indexOf(p.ev.eventId) >= 0) { out.accepted++; marks.push({ row: p.row, text: '✓ App đã nhận ' + stamp + extra }); }
+      else if (res.duplicates.indexOf(p.ev.eventId) >= 0) { out.duplicates++; marks.push({ row: p.row, text: '✓ Đã nhận trước đó (không tính lại)' }); }
+      else { out.errors++; marks.push({ row: p.row, text: '✗ ' + (rejected[p.ev.eventId] || 'không ghi được') }); }
+    });
+  }
+  // Mark single cells, only if the row still holds what was read (a chatbot may be writing).
+  marks.forEach(function (m) {
+    var cell = sh.getRange(m.row.n, col.processed + 1);
+    if (String(cell.getDisplayValue()).trim()) return;
+    if (String(sh.getRange(m.row.n, col.id + 1).getDisplayValue()).trim() !== m.row.id) return;
+    if (col.usage !== undefined && String(sh.getRange(m.row.n, col.usage + 1).getDisplayValue()).trim() !== m.row.usageRaw) return;
+    cell.setValue(m.text);
+  });
+  return out;
 }
 
 // ---------------------------------------------------------------- derived state mirror + optional write-back

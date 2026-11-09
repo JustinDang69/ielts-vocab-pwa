@@ -55,6 +55,20 @@ Errors: `{ok:false, error:"unauthorized"|"bad_json"|"unknown_action"|"server_err
 
 The badge says **"Đã lưu lên Google · time"** only when the device has no pending events and the last sync succeeded. Otherwise it says **"N thay đổi chỉ trên máy"**.
 
+## Speaking results (tab "Speaking Results")
+
+A Speaking chatbot appends one row per result to the tab "Speaking Results" in the vocabulary spreadsheet (format and learning rules: [SPEAKING.md](SPEAKING.md)). During `sync`, after appending the device's events and before pulling, the backend turns each row whose `Xử lý (app)` cell is empty into one event:
+
+```json
+{ "eventId": "sp-<sha256 of the row content>", "type": "speaking", "wordId": "v-…", "ts": "…", "studyDate": "YYYY-MM-DD",
+  "deviceId": "speaking-tab",
+  "data": { "usage": "pass|needs_work|not_assessed", "pronunciation": "pass|needs_work|not_assessed",
+            "evidence": "audio|transcript|none", "support": "none|hint|model|unknown",
+            "sentence": "…", "feedback": "…", "source": "…", "sheetRow": 7, "time": "…" } }
+```
+
+and writes `✓ …` or `✗ <reason>` into that cell (one cell, after re-checking that the row still holds what was read). The event ID is derived from the row content, so re-processing is a duplicate that `appendEvents_` ignores. Devices cannot send `speaking` events (`bad_type`). The `sync` response includes `speaking: {accepted, duplicates, errors, tests}`. `WordState.maxPronunciation` and `WordState.maxUsage` now hold the latest Speaking results.
+
 ## Sheet write-back (on by default)
 
 So that Max (ChatGPT) can read learning progress from the Sheet, `pushState` writes two cells per changed word, on the row whose `ID (app)` matches (re-checked just before writing):

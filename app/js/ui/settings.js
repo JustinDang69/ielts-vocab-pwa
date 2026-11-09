@@ -76,6 +76,7 @@ export function renderSettings(root, go) {
           ${S.lastError ? `<dt>Lỗi gần nhất</dt><dd>${esc(S.lastError)}</dd>` : ''}
         </dl>
         ${S.vocabWarnings.length ? `<div class="fb neutral small">${S.vocabWarnings.map(esc).join('<br>')}</div>` : ''}
+        <p class="small">🎤 Kết quả Speaking: <b>${M.events.filter((e) => e.type === 'speaking').length}</b> đã nhận từ tab <i>Speaking Results</i>${S.speaking ? (S.speaking.error ? ` · <b>lỗi:</b> ${esc(S.speaking.error)}` : ` · lần đồng bộ gần nhất: ${S.speaking.accepted} mới${S.speaking.errors ? `, ${S.speaking.errors} hàng lỗi (xem cột Xử lý (app))` : ''}${S.speaking.tests ? `, ${S.speaking.tests} hàng thử` : ''}`) : ''}.</p>
         <button class="btn soft" data-act="sync">Đồng bộ ngay</button>
         ${S.log.length ? `<details><summary class="small">Nhật ký</summary><ul class="history">${S.log.map((l) => `<li class="small"><span class="muted">${esc(fmtDateTime(l.at))}</span> ${esc(l.msg)}</li>`).join('')}</ul></details>` : ''}
       </div>` : ''}
@@ -87,6 +88,7 @@ export function renderSettings(root, go) {
         trong đó ít nhất <select id="rc">${[0, 1, 2, 3].map((n) => `<option ${n === M.config.requiredContextual ? 'selected' : ''}>${n}</option>`).join('')}</select> lần là bài trong ngữ cảnh (điền vào câu / paraphrase), và lần gần nhất đúng.</p>
         <p class="fine">Không tính: chọn đáp án (nhận diện), xem đáp án, tự đánh giá "Nhớ rồi", làm lại ngay trong cùng phiên, hoặc có dùng gợi ý. Nhiều lần trong cùng một ngày chỉ tính 1 ngày.</p>
         <p class="small">Đủ điều kiện → <b>Đã thuộc</b>: cất vào kho, chỉ thỉnh thoảng ôn duy trì.</p>
+        <p class="fine">Kết quả từ chatbot Speaking (tab <i>Speaking Results</i>): <b>tự dùng đúng trong câu, không gợi ý</b> = 1 ngày tự nhớ trong ngữ cảnh và giãn lịch ôn; <b>có gợi ý / nhắc theo mẫu</b> = chỉ ghi lịch sử; <b>dùng chưa đúng</b> = ôn lại sớm hơn. Phát âm chỉ được xác nhận khi bot nghe audio. Từ đã thuộc không bị bỏ thuộc vì Speaking — chỉ được ôn duy trì sớm hơn.</p>
         <p class="fine">App ghi <b>Trạng thái</b> (Learning / Review / Mastered) và <b>Ngày ôn gần nhất</b> lên Sheet sau mỗi lần đồng bộ, để Max xem và chọn từ luyện nói.</p>
       </div>
 

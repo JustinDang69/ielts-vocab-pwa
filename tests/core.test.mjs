@@ -221,3 +221,63 @@ test('backup: round-trip merge adds only what is missing and never deletes', asy
   assert.equal(same.newEntries.length, 0);
   assert.ok(validateBackup({ format: 'nope' }).length > 0);
 });
+
+// ---------------------------------------------------------------- Speaking results in progress
+const spk = (wordId, day, data) => ({ eventId: 'sp-' + (++seq), type: 'speaking', wordId, ts: `${day}T09:00:00.000Z`, studyDate: day, deviceId: 'speaking-tab',
+  data: { usage: 'pass', support: 'none', pronunciation: 'pass', evidence: 'audio', source: 'bot', ...data } });
+
+test('speaking: own correct use = contextual unassisted recall date and box up; hint/model = no credit', () => {
+  let s = computeStates(entries, [spk('w1', d(0), {})], DEFAULT_CONFIG, d(0)).states.get('w1');
+  assert.deepEqual([...s.successDates], [d(0)]);
+  assert.deepEqual([...s.contextualDates], [d(0)]);
+  assert.equal(s.box, 1);
+  assert.equal(s.nextReview, d(2));
+  assert.equal(s.speakPron.value, 'pass');
+  for (const support of ['hint', 'model', 'unknown']) {
+    s = computeStates(entries, [spk('w1', d(0), { support })], DEFAULT_CONFIG, d(0)).states.get('w1');
+    assert.equal(s.successDates.size, 0, support);
+    assert.equal(s.box, 0, support);
+    assert.equal(s.nextReview, d(1), `${support}: hold`);
+    assert.equal(s.status, 'learning');
+  }
+});
+
+test('speaking: wrong use schedules sooner; pronunciation needs audio; pronunciation-only has no recall effect', () => {
+  const evs = [rev('w1', d(0), { contextual: true }), spk('w1', d(2), { usage: 'needs_work' })];
+  let s = computeStates(entries, evs, DEFAULT_CONFIG, d(2)).states.get('w1');
+  assert.equal(s.box, 0);
+  assert.equal(s.nextReview, d(3));
+  assert.equal(s.lastUnassisted, 'wrong');
+  s = computeStates(entries, [spk('w1', d(0), { evidence: 'transcript' })], DEFAULT_CONFIG, d(0)).states.get('w1');
+  assert.equal(s.speakPron, undefined, 'transcript never confirms pronunciation');
+  s = computeStates(entries, [spk('w1', d(0), { usage: 'not_assessed' })], DEFAULT_CONFIG, d(0)).states.get('w1');
+  assert.equal(s.speakPron.value, 'pass');
+  assert.equal(s.attempts, 0);
+  assert.equal(s.successDates.size, 0);
+  assert.equal(s.status, 'new');
+});
+
+test('speaking: counts toward mastery together with app reviews; one box move per day; duplicates harmless', () => {
+  const sp = spk('w1', d(2), {});
+  const evs = [rev('w1', d(0), {}), rev('w1', d(1), {}), rev('w1', d(2), {}), sp, { ...sp }];
+  const dedupe = (xs) => [...new Map(xs.map((x) => [x.eventId, x])).values()];
+  const s = computeStates(entries, dedupe(evs), DEFAULT_CONFIG, d(2)).states.get('w1');
+  assert.equal(s.successDates.size, 3);
+  assert.equal(s.contextualDates.size, 1, 'the speaking result supplies the contextual date');
+  assert.equal(s.eligibleForMastery, true);
+  assert.equal(s.box, 3, 'review + speaking on the same day move the box once');
+  assert.equal(s.attempts, 4);
+});
+
+test('speaking: mastered words stay mastered; results only move maintenance', () => {
+  const m = { eventId: 'mm', type: 'mastered', wordId: 'w1', ts: `${d(0)}T10:00:00.000Z`, studyDate: d(0), data: {} };
+  let s = computeStates(entries, [m, spk('w1', d(10), {})], DEFAULT_CONFIG, d(10)).states.get('w1');
+  assert.equal(s.status, 'mastered');
+  assert.equal(s.nextMaintenance, d(100), 'good result counts as the 1st maintenance (next after 90 days)');
+  s = computeStates(entries, [m, spk('w1', d(10), { usage: 'needs_work' })], DEFAULT_CONFIG, d(10)).states.get('w1');
+  assert.equal(s.status, 'mastered');
+  assert.equal(s.archived, true);
+  assert.equal(s.maintenanceDue, true, 'weak result brings the maintenance check forward');
+  const plan = planSession({ minutes: 5, mode: 'quick', entries: [...entries, ...DEMO_ENTRIES], states: computeStates([...entries, ...DEMO_ENTRIES], [m, spk('w1', d(10), { usage: 'needs_work' })], DEFAULT_CONFIG, d(10)).states, seed: 1 });
+  assert.ok(plan.some((q) => q.wordId === 'w1' && q.maintenance));
+});

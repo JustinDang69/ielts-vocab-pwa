@@ -10,6 +10,7 @@ export const S = {
   failures: 0,
   log: [],
   vocabWarnings: [],
+  speaking: null,       // last Speaking Results ingestion summary from the server
 };
 
 const BACKOFF = [5, 20, 60, 180, 600];
@@ -87,6 +88,7 @@ async function doSync(reason) {
       const batch = pending().sort((a, b) => (a.ts < b.ts ? -1 : 1)).slice(0, 400);
       const sinceSeq = (await M.db.getKv('lastSeq')) || 0;
       const res = await call({ action: 'sync', sinceSeq, events: batch.map(clean) });
+      if (res.speaking) S.speaking = res.speaking;
       await applyPush(batch, res.push);
       await applyPull(res.pull);
       vocab = res.vocab;

@@ -2,7 +2,7 @@
 // Same-origin GETs are served cache-first, so the app opens with no network.
 // Requests to the Apps Script backend (other origin, POST) are never intercepted or cached:
 // sync data always comes from the live server or from IndexedDB, never from a stale cache.
-const VERSION = 'v1.0.0-8e05ebe099';
+const VERSION = 'v1.0.0-7270a68ccd';
 const CACHE = 'ielts-vocab-' + VERSION;
 const SHELL = [
   './', 'index.html', 'manifest.webmanifest', 'css/app.css',

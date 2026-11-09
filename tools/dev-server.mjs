@@ -4,7 +4,8 @@
 // Dev controls (for testing offline/reconnect and "another chat added a row"):
 //   POST /dev/offline?on=1|0   make everything except /dev/* unreachable (connection reset), or reachable again
 //   POST /dev/add-row          JSON body {term, meaning, context, ...} appended without an ID
-//   GET  /dev/dump             current vocab tab, Events and WordState tables
+//   POST /dev/speaking-row     JSON body {"ID (app)": ..., "Cách dùng": ...} appended to "Speaking Results", as a chatbot would
+//   GET  /dev/dump             current vocab tab, Speaking Results, Events and WordState tables
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,10 +50,19 @@ http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, lastRow: gas.vocab.getLastRow() }));
     return;
   }
+  if (url.pathname === '/dev/speaking-row' && req.method === 'POST') {
+    const f = JSON.parse((await body(req)) || '{}');
+    const tab = gas.bound.getSheetByName('Speaking Results');
+    if (!tab) { res.writeHead(409); res.end('Speaking Results tab not created yet (sync once first)'); return; }
+    const head = tab.getRange(1, 1, 1, tab.getLastColumn()).getDisplayValues()[0];
+    tab.appendRow(head.map((h) => f[h] ?? ''));
+    res.end(JSON.stringify({ ok: true, row: tab.getLastRow() }));
+    return;
+  }
   if (url.pathname === '/dev/dump') {
     const d = gas.data();
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-    res.end(JSON.stringify({ vocab: gas.vocab.table(), events: d.getSheetByName('Events').table(), wordState: d.getSheetByName('WordState').table(), log: d.getSheetByName('Log').table() }, null, 1));
+    res.end(JSON.stringify({ vocab: gas.vocab.table(), speaking: gas.bound.getSheetByName('Speaking Results')?.table() || [], events: d.getSheetByName('Events').table(), wordState: d.getSheetByName('WordState').table(), log: d.getSheetByName('Log').table() }, null, 1));
     return;
   }
   let p = path.normalize(decodeURIComponent(url.pathname)).replace(/^([/\\])+/, '');

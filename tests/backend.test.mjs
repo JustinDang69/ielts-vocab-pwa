@@ -131,3 +131,101 @@ test('write-back (on by default): only changed rows/cells, never New, never over
   push([{ wordId: es[0].id, sheetStatus: 'Learning', lastStudyDate: '2026-11-09' }]);
   assert.equal(g.vocab.table()[1][S], 'Review');
 });
+
+// ---------------------------------------------------------------- Speaking Results tab
+const SP_HEAD = ['ID (app)', 'Từ / Phrase', 'Thời gian', 'Cách dùng', 'Mức hỗ trợ', 'Phát âm', 'Bằng chứng phát âm', 'Câu Justin nói', 'Nhận xét', 'Nguồn', 'Xử lý (app)'];
+function speakingSetup() {
+  const g = fresh();
+  const first = g.call({ action: 'sync', token: g.token(), sinceSeq: 0 });
+  const tab = g.bound.getSheetByName('Speaking Results');
+  const ids = Object.fromEntries(first.vocab.entries.map((e) => [e.fields.term + '|' + e.fields.meaning, e.id]));
+  const add = (o) => tab.appendRow(SP_HEAD.map((h) => o[h] ?? ''));
+  const sync = (sinceSeq = 0) => g.call({ action: 'sync', token: g.token(), sinceSeq });
+  const marks = () => tab.table().slice(1).map((r) => r[SP_HEAD.length - 1]);
+  return { g, tab, ids, add, sync, marks };
+}
+const ok = (id, extra = {}) => ({ 'ID (app)': id, 'Thời gian': '2026-11-08 19:30', 'Cách dùng': 'pass', 'Mức hỗ trợ': 'none', 'Phát âm': 'pass', 'Bằng chứng phát âm': 'audio', 'Câu Justin nói': 'We amended the plan.', 'Nhận xét': 'Natural.', 'Nguồn': 'test bot', ...extra });
+
+test('speaking: tab created once with the agreed headers; guide row added; vocab tab untouched', () => {
+  const { g, tab, sync } = speakingSetup();
+  assert.deepEqual(tab.table()[0], SP_HEAD);
+  const before = g.vocab.table();
+  sync(); sync();
+  assert.equal(g.bound.getSheets().filter((s) => s.getName() === 'Speaking Results').length, 1);
+  assert.ok(g.bound.getSheetByName('Hướng dẫn').table().some((r) => r[0] === 'Tab Speaking Results'));
+  assert.deepEqual(g.vocab.table(), before);
+});
+
+test('speaking: each row becomes exactly one event, also after retries and a cleared marker', () => {
+  const { g, tab, ids, add, sync, marks } = speakingSetup();
+  const amend = ids['amend|Sửa đổi'];
+  add(ok(amend));
+  const r1 = sync();
+  assert.equal(r1.speaking.accepted, 1);
+  const ev = r1.pull.events.find((e) => e.type === 'speaking');
+  assert.equal(ev.wordId, amend);
+  assert.equal(ev.studyDate, '2026-11-08');
+  assert.equal(ev.ts, '2026-11-08T08:30:00.000Z', '19:30 Sydney (AEDT) = 08:30Z');
+  assert.deepEqual([ev.data.usage, ev.data.support, ev.data.pronunciation, ev.data.evidence], ['pass', 'none', 'pass', 'audio']);
+  assert.match(marks()[0], /^✓ App đã nhận/);
+  // later syncs: skipped (marker present)
+  assert.equal(sync(r1.pull.lastSeq).speaking.accepted, 0);
+  // someone clears the marker: same content -> same event ID -> duplicate, not counted again
+  tab.getRange(2, SP_HEAD.length).setValue('');
+  const r3 = sync(r1.pull.lastSeq);
+  assert.equal(r3.speaking.accepted, 0);
+  assert.equal(r3.speaking.duplicates, 1);
+  assert.equal(r3.pull.events.length, 0);
+  assert.match(marks()[0], /không tính lại/);
+  assert.equal(g.data().getSheetByName('Events').table().slice(1).filter((r) => r[2] === 'speaking').length, 1);
+});
+
+test('speaking: validation, test rows, transcript pronunciation, term-only resolution', () => {
+  const { ids, add, sync, marks } = speakingSetup();
+  const amend = ids['amend|Sửa đổi'];
+  add({ 'ID (app)': 'TEST-WRITE', 'Cách dùng': 'not_assessed' });               // 1 test row
+  add(ok('v-00000000'));                                                         // 2 unknown ID
+  add(ok(amend, { 'Từ / Phrase': 'tweak' }));                                    // 3 term mismatch
+  add(ok(amend, { 'Cách dùng': 'great' }));                                      // 4 bad value
+  add(ok(amend, { 'Cách dùng': 'not_assessed', 'Phát âm': '' }));               // 5 nothing assessed
+  add(ok(amend, { 'Thời gian': '2099-01-01 10:00' }));                           // 6 future
+  add(ok('', { 'Từ / Phrase': 'curb' }));                                        // 7 ambiguous term (2 rows)
+  add(ok(amend, { 'Bằng chứng phát âm': 'transcript', 'Câu Justin nói': 'x' })); // 8 pronunciation downgraded
+  add(ok('', { 'Từ / Phrase': 'Tweak', 'Cách dùng': 'Đạt', 'Mức hỗ trợ': 'gợi ý', 'Phát âm': 'chưa đánh giá', 'Bằng chứng phát âm': '' })); // 9 term-only + VN spellings
+  add(ok(amend, { 'Mức hỗ trợ': '', 'Câu Justin nói': 'y' }));                   // 10 missing support
+  add({});                                                                       // 11 empty row: ignored
+  const r = sync();
+  const m = marks();
+  assert.match(m[0], /^🧪/);
+  assert.match(m[1], /^✗ ID không có/);
+  assert.match(m[2], /^✗ Từ không khớp/);
+  assert.match(m[3], /^✗ Giá trị không hợp lệ ở cột: Cách dùng/);
+  assert.match(m[4], /^✗ Chưa có kết quả/);
+  assert.match(m[5], /^✗ Thời gian nằm ở tương lai/);
+  assert.match(m[6], /^✗ Thiếu ID \(app\): có nhiều hàng/);
+  assert.match(m[7], /^✓ .*phát âm không có audio/);
+  assert.match(m[8], /^✓ .*ID suy ra/);
+  assert.match(m[9], /^✓ .*thiếu Mức hỗ trợ/);
+  assert.equal(r.speaking.accepted, 3);
+  assert.equal(r.speaking.errors, 6);
+  assert.equal(r.speaking.tests, 1);
+  const sp = r.pull.events.filter((e) => e.type === 'speaking');
+  assert.equal(sp.find((e) => e.data.sentence === 'x').data.pronunciation, 'not_assessed');
+  const t = sp.find((e) => e.wordId === ids['tweak|Điều chỉnh nhẹ']);
+  assert.deepEqual([t.data.usage, t.data.support, t.data.pronunciation], ['pass', 'hint', 'not_assessed']);
+  assert.equal(sp.find((e) => e.data.sentence === 'y').data.support, 'unknown');
+});
+
+test('speaking: Date-typed and missing times; devices can never push speaking events', () => {
+  const { g, tab, ids, add, sync } = speakingSetup();
+  const amend = ids['amend|Sửa đổi'];
+  add(ok(amend, { 'Thời gian': '' }));
+  add(ok(amend, { 'Câu Justin nói': 'dated' }));
+  tab.getRange(3, 3).setNumberFormat('').setValue(new Date('2026-11-07T09:00:00Z')); // a real date cell
+  const r = sync();
+  const sp = r.pull.events.filter((e) => e.type === 'speaking');
+  assert.equal(sp.length, 2);
+  assert.equal(sp.find((e) => e.data.sentence === 'dated').ts, '2026-11-07T09:00:00.000Z');
+  const forged = g.call({ action: 'sync', token: g.token(), sinceSeq: 0, events: [{ eventId: 'forged-speaking-1', type: 'speaking', wordId: amend, ts: new Date().toISOString(), studyDate: '2026-11-08', data: { usage: 'pass', support: 'none' } }] });
+  assert.equal(forged.push.rejected[0].reason, 'bad_type');
+});

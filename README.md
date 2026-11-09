@@ -6,6 +6,7 @@ An iPhone-first Progressive Web App for 2–10 minute vocabulary sessions, built
 - **Home:** Học 2 / 5 / 10 phút, plus "Tiếp tục" for an interrupted session.
 - **Modes:** 🃏 Chill Cards · ⚡ Quick Play (meaning choice, gap-fill in the original sentence, typed recall) · 🔍 IELTS Detective (paraphrase ↔ term, meaning in context, easily confused pairs).
 - **Kho từ:** search over every entry, including mastered words in the archive, with full history and "Đưa về học lại" (restore).
+- **Speaking results from a chatbot:** the chatbot appends one row per result to the Sheet's **Speaking Results** tab; the app picks them up automatically on its next sync and counts them in progress and scheduling (see [docs/SPEAKING.md](docs/SPEAKING.md)).
 - **Speaking with Max:** happens entirely in ChatGPT. The app writes each word's **Trạng thái** (Learning / Review / Mastered) and **Ngày ôn gần nhất** into the Sheet, so Max can read them and pick words to practise.
 - **Cài đặt:** connection, real sync status, recall rule, transparent schedule, voice, backup/restore.
 

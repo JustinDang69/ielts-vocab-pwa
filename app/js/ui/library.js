@@ -50,11 +50,14 @@ export function renderLibrary(root, params) {
   root.onclick = null;
 }
 
+const SPEAK = { pass: 'Đạt', needs_work: 'Cần luyện thêm', not_assessed: 'Chưa đánh giá' };
+const SUPPORT = { none: 'tự nói, không gợi ý', hint: 'có gợi ý', model: 'nhắc lại theo mẫu', unknown: 'không rõ mức hỗ trợ' };
 const OUT_LABEL = { correct: 'đúng', wrong: 'chưa đúng', revealed: 'xem đáp án', other_term: 'từ gần nghĩa', self_known: 'tự đánh giá: nhớ', self_unsure: 'tự đánh giá: lơ mơ', self_unknown: 'tự đánh giá: chưa nhớ' };
 function historyLine(ev) {
   const d = ev.data || {};
   let t = '';
   if (ev.type === 'review') t = `${KIND_LABEL[d.exercise] || d.exercise}: ${OUT_LABEL[d.outcome] || d.outcome}${d.assisted ? ' (có gợi ý)' : ''}${d.retry ? ' (gặp lại trong phiên)' : ''}${d.maintenance ? ' (ôn duy trì)' : ''}`;
+  else if (ev.type === 'speaking') t = `🎤 Speaking: cách dùng ${SPEAK[d.usage] || d.usage}, phát âm ${SPEAK[d.pronunciation] || d.pronunciation} (${SUPPORT[d.support] || d.support})`;
   else if (ev.type === 'mastered') t = '🏆 Đã thuộc → lưu trữ';
   else if (ev.type === 'restore') t = `↩︎ Đưa về học lại${d.reason === 'maintenance_failed' ? ' (quên khi ôn duy trì)' : ''}`;
   return `<li><span class="small muted">${esc(fmtDate(ev.studyDate))}</span> ${esc(t)}${ev._synced ? '' : ' <span class="tag local" title="Chưa lên Google">trên máy</span>'}</li>`;
@@ -79,6 +82,7 @@ export function renderWord(root, id, go) {
         <p class="small muted">${s.archived ? `Đã thuộc từ ${esc(fmtDate(s.masteredAt))}. Ôn duy trì tiếp theo: ${esc(fmtDate(s.nextMaintenance))}.` : s.nextReview ? `Ôn tiếp theo: <b>${esc(fmtDate(s.nextReview))}</b> · ${esc(interval)}` : 'Chưa học lần nào.'}</p>
         <p class="small muted">Lượt làm: ${s.attempts} · dùng gợi ý: ${s.hintsUsed} · chưa đúng: ${s.errors}</p>
       </div>
+      ${speakingCard(s)}
       ${s.archived ? `<div class="card"><p class="small">Từ đã thuộc không xuất hiện trong phiên học thường, chỉ thỉnh thoảng ôn duy trì.</p>
         <button class="btn soft" data-act="restore">↩︎ Đưa về học lại</button></div>` : ''}
       <div class="card"><h3>Lịch sử</h3><ul class="history">${s.history.slice(-20).reverse().map(historyLine).join('') || '<li class="muted">Chưa có.</li>'}</ul></div>
@@ -93,6 +97,18 @@ export function renderWord(root, id, go) {
       renderWord(root, id, go);
     }
   };
+}
+
+function speakingCard(s) {
+  if (!s.speakUsage && !s.speakPron) return '';
+  const line = (label, rec, extra = '', text = true) => `<div class="maxline"><span>${label}</span> <b class="${rec ? rec.value : 'na'}">${rec ? SPEAK[rec.value] : 'Chưa đánh giá'}</b>
+    ${rec ? `<div class="small muted">${esc(fmtDate(rec.at))} · ${esc(rec.source || '')}${extra ? ' · ' + esc(extra) : ''}</div>` : ''}
+    ${text && rec?.sentence ? `<div class="small">“${esc(rec.sentence)}”</div>` : ''}${text && rec?.feedback ? `<div class="small muted">${esc(rec.feedback)}</div>` : ''}</div>`;
+  const sameResult = s.speakPron && s.speakUsage && s.speakPron.ts === s.speakUsage.ts;
+  return `<div class="card"><h3>Speaking (từ chatbot)</h3>
+    ${line('Dùng đúng ngữ cảnh', s.speakUsage, s.speakUsage ? SUPPORT[s.speakUsage.support] : '')}
+    ${line('Phát âm', s.speakPron, s.speakPron ? 'bot nghe audio' : '', !sameResult)}
+    <p class="fine">Tự dùng đúng, không gợi ý = 1 lần nhớ trong ngữ cảnh. Có gợi ý / theo mẫu chỉ ghi lịch sử. Phát âm chỉ tính khi bot nghe audio.</p></div>`;
 }
 
 export { STATUS_LABEL };
